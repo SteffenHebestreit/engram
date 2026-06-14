@@ -382,8 +382,9 @@ down. Pass pytest args as usual: `docker compose run --rm tests pytest -k scorin
 - **Bring your own models.** Embeddings, LLM and reranker are plain
   OpenAI-compatible HTTP endpoints. Local, on-prem, cloud: your call.
 - **Degrade, never break.** LLM down? HyDE skips itself. GDS plugin missing?
-  Proximity falls back to decay. The reranker is the only hard dependency in
-  search.
+  Proximity falls back to decay. Reranker down? Results fall back to the fused
+  score. The embedding endpoint is the only remaining hard dependency in search
+  (you have to embed the query somehow).
 - **Every score is explainable.** Each result tells you how it entered the
   pool, how far it sits in the graph, and what every pipeline stage thought
   of it.

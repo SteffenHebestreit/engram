@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from typing import TYPE_CHECKING
 
 import httpx
@@ -17,6 +18,8 @@ from .models import SearchResult
 from .pipeline import get_expander, get_fusion, get_proximity
 from .rerank import rerank
 from .scoring import autocut, median_proximity_scores, mmr_select
+
+log = logging.getLogger(__name__)
 
 
 async def search(
@@ -143,6 +146,11 @@ async def search(
     shortlist = [pool[i] for i in picked]
 
     rerank_scores = await rerank(http, query, [c["text"] for c in shortlist])
+    if rerank_scores is None:
+        # reranker unavailable: degrade to the fused score as the final signal
+        # rather than failing the whole search (cf. the HyDE and PPR fallbacks)
+        log.warning("reranker unavailable; falling back to fused score")
+        rerank_scores = [c["fused_score"] for c in shortlist]
     for cand, score in zip(shortlist, rerank_scores):
         cand["rerank_score"] = score
     shortlist.sort(key=lambda c: c["rerank_score"], reverse=True)

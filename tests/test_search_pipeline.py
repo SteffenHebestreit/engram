@@ -227,6 +227,22 @@ async def test_tuning_rejects_non_tunable_field(patched):
         await search_mod.search(None, None, "test query", tuning={"neo4j_password": "x"})
 
 
+async def test_reranker_down_falls_back_to_fused_score(patched, monkeypatch):
+    async def fake_rerank(client, query, texts):
+        return None  # reranker unavailable
+
+    monkeypatch.setattr(search_mod, "rerank", fake_rerank)
+    results = await search_mod.search(None, None, "test query")
+
+    # search still returns results; final order and rerank_score come from the
+    # fused score instead of breaking
+    assert results
+    for r in results:
+        assert r.rerank_score == r.fused_score
+    fused = [r.fused_score for r in results]
+    assert fused == sorted(fused, reverse=True)
+
+
 async def test_no_hits_returns_empty(monkeypatch):
     async def fake_embed_text(client, text):
         return [1.0, 0.0, 0.0]
