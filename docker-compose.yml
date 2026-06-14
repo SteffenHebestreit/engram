@@ -1,0 +1,73 @@
+# explicit project name so containers/volumes/images are named consistently
+# regardless of the checkout directory
+name: engram
+
+services:
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: engram-neo4j
+    ports:
+      - "7474:7474"   # browser UI
+      - "7687:7687"   # bolt
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-engram}
+      NEO4J_server_memory_heap_initial__size: 1G
+      NEO4J_server_memory_heap_max__size: 2G
+      NEO4J_server_memory_pagecache_size: 1G
+      # Graph Data Science (community) for personalized PageRank proximity
+      NEO4J_PLUGINS: '["graph-data-science"]'
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      target: base
+    container_name: engram-api
+    ports:
+      - "8088:8088"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # inside the compose network the database is reached by service name;
+      # overrides any NEO4J_URI from .env
+      NEO4J_URI: bolt://neo4j:7687
+    extra_hosts:
+      # lets containers reach endpoints running on the docker host
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8088/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # test runner: docker compose run --rm tests
+  tests:
+    build:
+      context: .
+      target: test
+    profiles: ["test"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      neo4j:
+        condition: service_healthy
+
+volumes:
+  neo4j_data:
+  neo4j_logs:

@@ -1,0 +1,13 @@
+# secrets / local config
+.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# tooling / OS
+.claude/
+.DS_Store
