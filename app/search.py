@@ -57,11 +57,20 @@ async def search(
     )
     try:
         query_emb = await _query_embedding(http, query, settings)
+    except Exception:
+        # embedding endpoint unreachable: degrade to fulltext-only search rather
+        # than breaking. The vector channels are skipped; the lexical channel
+        # plus the graph/median/rerank stages still run on the chunk embeddings
+        # already stored in Neo4j.
+        log.warning("embedding endpoint unavailable; falling back to fulltext-only search")
+        query_emb = None
     except BaseException:
+        # genuine cancellation / interpreter shutdown: don't swallow it
         fulltext_task.cancel()
         raise
 
-    channels = resolve_vector_channels(settings)
+    # no query embedding -> no vector channels; the lexical channel carries it
+    channels = resolve_vector_channels(settings) if query_emb is not None else []
     *channel_hits, fulltext_hits = await asyncio.gather(
         *(
             graph.vector_search(driver, ch.index, query_emb, settings.top_k_per_index)

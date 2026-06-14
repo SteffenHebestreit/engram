@@ -243,6 +243,32 @@ async def test_reranker_down_falls_back_to_fused_score(patched, monkeypatch):
     assert fused == sorted(fused, reverse=True)
 
 
+async def test_embeddings_down_falls_back_to_fulltext_only(patched, monkeypatch):
+    calls = {"vector": 0}
+
+    async def boom_embed(client, text):
+        raise RuntimeError("embedding endpoint down")
+
+    async def counting_vector_search(driver, index_name, embedding, k):
+        calls["vector"] += 1
+        return []
+
+    monkeypatch.setattr(search_mod, "embed_text", boom_embed)
+    monkeypatch.setattr(search_mod.graph, "vector_search", counting_vector_search)
+
+    results = await search_mod.search(None, None, "test query")
+
+    # no vector channel was queried, yet search still returns lexical results
+    assert calls["vector"] == 0
+    ids = {r.chunk_id for r in results}
+    assert "F" in ids  # F is the fulltext-only hit in the fixture
+    assert by_id_origin(results, "F") == "fulltext"
+
+
+def by_id_origin(results, chunk_id):
+    return next(r.origin for r in results if r.chunk_id == chunk_id)
+
+
 async def test_no_hits_returns_empty(monkeypatch):
     async def fake_embed_text(client, text):
         return [1.0, 0.0, 0.0]

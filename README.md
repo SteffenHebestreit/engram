@@ -383,8 +383,8 @@ down. Pass pytest args as usual: `docker compose run --rm tests pytest -k scorin
   OpenAI-compatible HTTP endpoints. Local, on-prem, cloud: your call.
 - **Degrade, never break.** LLM down? HyDE skips itself. GDS plugin missing?
   Proximity falls back to decay. Reranker down? Results fall back to the fused
-  score. The embedding endpoint is the only remaining hard dependency in search
-  (you have to embed the query somehow).
+  score. Embedding endpoint down? Search degrades to fulltext-only (BM25) on the
+  stored embeddings. Neo4j is the only true hard dependency, and it *is* the store.
 - **Every score is explainable.** Each result tells you how it entered the
   pool, how far it sits in the graph, and what every pipeline stage thought
   of it.
