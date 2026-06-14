@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="logo.svg" alt="engram logo" width="480">
+  <img src="logo.svg" alt="engram" width="480">
 </p>
-
-# engram
 
 **Retrieval-Augmented Generation that doesn't just *search* your documents, it *remembers* them.**
 
