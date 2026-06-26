@@ -1,0 +1,17 @@
+# GPU benchmark runner: same as bench/Dockerfile but with CUDA-enabled torch.
+# Requires the NVIDIA Container Toolkit (run with the GPU compose override).
+FROM python:3.12-slim
+
+WORKDIR /srv/engram
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+# default PyPI torch wheel is CUDA-enabled on Linux (falls back to CPU if no GPU)
+RUN pip install --no-cache-dir torch
+COPY bench/requirements.txt ./bench-requirements.txt
+RUN pip install --no-cache-dir -r bench-requirements.txt
+
+COPY app ./app
+COPY bench ./bench
+
+CMD ["python", "-m", "bench.compare"]

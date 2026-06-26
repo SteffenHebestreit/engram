@@ -11,8 +11,9 @@ from pathlib import Path
 
 import httpx
 
-from app import graph
+from app.config import get_settings
 from app.ingest import ingest_document
+from app.store import create_store
 
 
 async def main() -> None:
@@ -26,19 +27,20 @@ async def main() -> None:
     title = args.title or args.path.stem
     source = args.source or str(args.path)
 
-    driver = graph.create_driver()
+    store = create_store(get_settings())
+    await store.connect()
     try:
-        await driver.verify_connectivity()
-        await graph.init_schema(driver)
+        await store.verify_connectivity()
+        await store.init_schema()
         async with httpx.AsyncClient() as http:
             doc_id, chunk_count, keywords = await ingest_document(
-                driver, http, text, title=title, source=source
+                store, http, text, title=title, source=source
             )
         print(f"document_id: {doc_id}")
         print(f"chunks: {chunk_count}")
         print(f"keywords: {', '.join(keywords)}")
     finally:
-        await driver.close()
+        await store.close()
 
 
 if __name__ == "__main__":

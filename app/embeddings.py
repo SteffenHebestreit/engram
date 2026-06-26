@@ -42,7 +42,7 @@ async def _embed_batch(client: httpx.AsyncClient, texts: list[str]) -> list[list
         f"{settings.embedding_api_base.rstrip('/')}/embeddings",
         json={"model": settings.embedding_model, "input": texts},
         headers=headers,
-        timeout=120,
+        timeout=settings.request_timeout,
     )
     resp.raise_for_status()
     data = resp.json()["data"]
@@ -53,3 +53,46 @@ async def _embed_batch(client: httpx.AsyncClient, texts: list[str]) -> list[list
 
 async def embed_text(client: httpx.AsyncClient, text: str) -> list[float]:
     return (await embed_texts(client, [text]))[0]
+
+
+async def embed_sparse_texts(
+    client: httpx.AsyncClient, texts: list[str]
+) -> list[dict[str, float]] | None:
+    """BGE-M3 learned-sparse term weights per text from the multi-output endpoint.
+
+    Returns one `{token: weight}` map per text, or None on any failure / when no
+    sparse endpoint is configured — sparse is opt-in and degrades gracefully
+    (the dense channels carry the search), like the HyDE / reranker fallbacks.
+    """
+    if not texts:
+        return []
+    settings = get_settings()
+    if not settings.sparse_api_base:
+        return None
+
+    headers = {}
+    if settings.sparse_api_key:
+        headers["Authorization"] = f"Bearer {settings.sparse_api_key}"
+    try:
+        resp = await client.post(
+            f"{settings.sparse_api_base.rstrip('/')}/embed_sparse",
+            json={"model": settings.sparse_model, "input": texts},
+            headers=headers,
+            timeout=settings.request_timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()["data"]
+        data.sort(key=lambda item: item["index"])
+        return [
+            {str(k): float(v) for k, v in item["lexical_weights"].items()}
+            for item in data
+        ]
+    except Exception:
+        return None
+
+
+async def embed_sparse_text(
+    client: httpx.AsyncClient, text: str
+) -> dict[str, float] | None:
+    out = await embed_sparse_texts(client, [text])
+    return out[0] if out else None

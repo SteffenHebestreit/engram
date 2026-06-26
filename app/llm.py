@@ -52,6 +52,43 @@ def get_extractor(name: str) -> MetadataExtractor:
     return EXTRACTORS.get(name)
 
 
+@EXTRACTORS.register("none")
+async def extract_nothing(client: httpx.AsyncClient, chunk: str) -> ExtractionResult:
+    """No-op extractor: no LLM call, empty summary/keywords.
+
+    The cheap end of the cost/quality trade-off — one embedding per chunk and
+    zero LLM round trips. Pair with content-only channels
+    (`summary_channel_enabled=false`, `keywords_channel_enabled=false`). Note
+    this also drops the summary's fulltext contribution and keyword-sibling
+    graph expansion, since both derive from this metadata.
+    """
+    return ExtractionResult(keywords=[], summary="")
+
+
+_yake_extractor = None
+
+
+@EXTRACTORS.register("yake")
+async def extract_yake(client: httpx.AsyncClient, chunk: str) -> ExtractionResult:
+    """Statistical keyword extraction (YAKE) — no LLM, no network.
+
+    A middle ground between `default` (LLM) and `none`: it populates the
+    keyword channel and the shared-keyword graph (so cross-document HAS_KEYWORD
+    linking and keyword-sibling expansion work) without a generative model.
+    The summary is the chunk's first sentence. Useful for graph-augmented
+    retrieval when no LLM endpoint is available.
+    """
+    global _yake_extractor
+    if _yake_extractor is None:
+        import yake
+
+        _yake_extractor = yake.KeywordExtractor(lan="en", n=2, top=8)
+    keywords = [kw.lower() for kw, _ in _yake_extractor.extract_keywords(chunk)]
+    cleaned = chunk.strip()
+    summary = re.split(r"(?<=[.!?])\s+", cleaned)[0][:300] if cleaned else ""
+    return ExtractionResult(keywords=keywords, summary=summary)
+
+
 @EXTRACTORS.register("default")
 async def extract_metadata(client: httpx.AsyncClient, chunk: str) -> ExtractionResult:
     """Ask the LLM for keywords/labels and a one-sentence summary of a chunk."""
@@ -76,7 +113,7 @@ async def extract_metadata(client: httpx.AsyncClient, chunk: str) -> ExtractionR
         f"{settings.llm_api_base.rstrip('/')}/chat/completions",
         json=body,
         headers=headers,
-        timeout=120,
+        timeout=settings.request_timeout,
     )
     resp.raise_for_status()
     content = resp.json()["choices"][0]["message"]["content"]
@@ -125,13 +162,69 @@ async def generate_hypothetical_answer(
                 ],
             },
             headers=headers,
-            timeout=30,
+            timeout=settings.hyde_timeout,
         )
         resp.raise_for_status()
         text = resp.json()["choices"][0]["message"]["content"].strip()
         return text or None
     except Exception:
         return None
+
+
+_COMMUNITY_REPORT_SYSTEM_PROMPT = """\
+You summarize a thematic cluster of document passages for a knowledge base.
+Given the passages' one-sentence summaries and shared keywords, reply with JSON
+only, exactly this shape:
+{"title": "...", "summary": "..."}
+
+Rules:
+- title: a short (3-7 word) descriptive name for the theme.
+- summary: 2-4 sentences describing what this cluster of content is about.
+- No markdown, no explanations, JSON only."""
+
+
+async def generate_community_report(
+    client: httpx.AsyncClient, summaries: list[str], keywords: list[str]
+) -> dict | None:
+    """A title + summary for a detected community (GraphRAG-style report).
+
+    Returns {"title", "summary"} or None on any failure, so community building
+    degrades to bare structure (keywords only) when the LLM is unavailable.
+    """
+    settings = get_settings()
+    member_summaries = "\n".join(f"- {s}" for s in summaries if s)[:4000]
+    user = f"Keywords: {', '.join(keywords)}\n\nPassage summaries:\n{member_summaries}"
+
+    headers = {}
+    if settings.llm_api_key:
+        headers["Authorization"] = f"Bearer {settings.llm_api_key}"
+    body: dict = {
+        "model": settings.llm_model,
+        "temperature": 0.2,
+        "messages": [
+            {"role": "system", "content": _COMMUNITY_REPORT_SYSTEM_PROMPT},
+            {"role": "user", "content": user},
+        ],
+    }
+    if settings.llm_json_mode:
+        body["response_format"] = {"type": "json_object"}
+
+    try:
+        resp = await client.post(
+            f"{settings.llm_api_base.rstrip('/')}/chat/completions",
+            json=body,
+            headers=headers,
+            timeout=settings.request_timeout,
+        )
+        resp.raise_for_status()
+        parsed = _parse_json_object(resp.json()["choices"][0]["message"]["content"])
+    except Exception:
+        return None
+    title = str(parsed.get("title", "")).strip()
+    summary = str(parsed.get("summary", "")).strip()
+    if not title and not summary:
+        return None
+    return {"title": title, "summary": summary}
 
 
 def _parse_json_object(text: str) -> dict:

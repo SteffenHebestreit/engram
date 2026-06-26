@@ -1,0 +1,41 @@
+# GPU override for the benchmark stack — run the REAL production stack on the
+# host GPU: BGE-M3 embeddings + engram's default bge-reranker-v2-m3 reranker,
+# at full rerank depth. Requires the NVIDIA Container Toolkit.
+#
+#   docker compose -f bench/docker-compose.yml -f bench/docker-compose.gpu.yml \
+#       run --rm runner python -m bench.compare
+#   docker compose -f bench/docker-compose.yml -f bench/docker-compose.gpu.yml \
+#       run --rm multihop
+
+services:
+  runner:
+    build:
+      dockerfile: bench/Dockerfile.gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      # engram's real default reranker (a 560M cross-encoder — GPU-only in practice)
+      BENCH_RERANK_MODEL: BAAI/bge-reranker-v2-m3
+      BENCH_RERANK_DEPTH: "100"
+
+  multihop:
+    build:
+      dockerfile: bench/Dockerfile.gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      BENCH_RERANK_MODEL: BAAI/bge-reranker-v2-m3
+      BENCH_RERANK_DEPTH: "100"
+      RERANK_TOP_K: "100"
+      FINAL_TOP_K: "100"
+      BENCH_MULTIHOP_N: "1000"

@@ -49,6 +49,7 @@ skipped, never fatal).
 | Score fusion | `FUSIONS` | `FUSION_STRATEGY` | `dbsf_convex` | [app/pipeline.py](../app/pipeline.py) |
 | Graph expansion | `EXPANDERS` | `EXPANDER_STRATEGY` | `sequence_keyword` | [app/pipeline.py](../app/pipeline.py) |
 | Graph proximity | `PROXIMITIES` | `GRAPH_PROXIMITY_MODE` | `ppr` (→ `decay`) | [app/pipeline.py](../app/pipeline.py) |
+| Reranker | `RERANKERS` | `RERANKER_STRATEGY` | `http` | [app/rerank.py](../app/rerank.py) |
 
 ### Chunker
 `(text: str, settings: Settings) -> list[str]`. The default is a
@@ -65,14 +66,67 @@ The default DBSF-normalizes each channel then convex-combines them. An
 alternative could implement Reciprocal Rank Fusion.
 
 ### Expander
-`async (driver, seed_ids, settings) -> list[sibling]`. The default walks
-`NEXT_CHUNK` both ways and shared-keyword siblings. A custom expander could walk
-typed domain relations (see *Special graphs* below).
+`async (store, seed_ids, settings) -> list[sibling]`. The default asks the store
+for `NEXT_CHUNK` siblings both ways and shared-keyword siblings. A custom
+expander could walk typed domain relations (see *Special graphs* below).
 
 ### Proximity
-`async (driver, seed_ids, siblings, settings) -> list[float]` parallel to
-`siblings`. Built-ins: `ppr` (Personalized PageRank with a per-sibling decay
-fallback) and `decay`.
+`async (store, seed_ids, siblings, settings) -> list[float]` parallel to
+`siblings`. Built-ins: `ppr` (graph-activation proximity — Personalized PageRank
+on the neo4j backend — with a per-sibling decay fallback when the store reports
+no proximity capability) and `decay`.
+
+### Reranker
+`async (client, query, texts) -> list[float] | None`, one score per text in
+input order; return `None` to signal "unavailable" and the pipeline falls back
+to the fused score. The default `http` strategy calls a cross-encoder endpoint
+(`tei`/`jina` wire formats). Set `RERANKER_ENABLED=false` to skip the
+cross-encoder round trip entirely (same fused-score fallback).
+
+---
+
+## Storage backends
+
+The whole data layer sits behind a `Store` protocol ([app/store.py](../app/store.py)),
+selected by `STORE_BACKEND` through the `STORES` registry — same pattern as the
+pipeline seams, so a third-party backend can register via `engram.plugins`.
+
+| Backend | `STORE_BACKEND` | What you get |
+|---|---|---|
+| Neo4j | `neo4j` (default) | graph + vector in one store; GDS Personalized-PageRank proximity; structured-entity ingest |
+| pgvector | `pgvector` | PostgreSQL + pgvector: vector (HNSW/cosine) + fulltext (`tsvector`) + sequence/keyword siblings |
+
+The two share the exact same retrieval pipeline and scoring math; they differ
+only in capabilities the SQL backend can't provide:
+
+- **No graph-activation proximity.** pgvector has no GDS PageRank, so
+  `graph_proximity` returns `None` and the `ppr` strategy transparently falls
+  back to per-hop **decay** (the same path used when the GDS plugin is missing).
+  Sequence (`NEXT_CHUNK` → `seq ± hops`) and keyword (`HAS_KEYWORD` → a
+  `chunk_keywords` join table) siblings still work.
+- **No structured-entity graph.** `POST /graph/entities` and `/graph/relations`
+  are neo4j-only; on pgvector they return `501 Not Implemented`.
+
+Run the pgvector backend:
+
+```bash
+# bring up Postgres (pgvector image) alongside the API
+docker compose --profile pgvector up -d postgres
+# point the API at it (in .env, or inline)
+STORE_BACKEND=pgvector docker compose up -d --build api
+```
+
+`docker compose run --rm tests` starts both Neo4j and Postgres, so the neo4j and
+pgvector integration tests both run. A custom backend implements the `Store`
+protocol and registers a factory:
+
+```python
+from app.store import STORES
+
+@STORES.register("mybackend")
+def _make(settings):
+    return MyStore(settings)        # implements the Store protocol
+```
 
 ---
 
@@ -96,6 +150,21 @@ built from the `*_CHANNEL_WEIGHT` settings. Override the whole set with the
   canonical geometry vector used by median-proximity and MMR.
 - Changing the channel set changes the **schema signature** (see below); wipe
   and re-ingest, or the guard will stop you.
+
+**Incremental re-ingest.** Re-ingesting a document (same id, edited text)
+replaces it, but `REUSE_UNCHANGED_CHUNKS` (default on) makes any chunk whose
+text is byte-identical to one in the previous version reuse its stored vectors
+and metadata — so only the chunks that actually changed pay for fresh LLM
+extraction + embedding. Localized edits cost re-embedding only the chunks they
+touch; a full reflow that shifts every chunk boundary still re-embeds everything.
+
+**Cheaper ingest.** Drop the summary/keywords channels with
+`SUMMARY_CHANNEL_ENABLED=false` / `KEYWORDS_CHANNEL_ENABLED=false` (content-only
+= one embedding per chunk), and set `METADATA_EXTRACTOR=none` to skip the
+per-chunk LLM call entirely. Together that's the naive-baseline cost (1 embedding,
+0 LLM calls). The trade-off: no keyword-sibling graph expansion and no summary
+in the fulltext index, since both derive from that metadata — so it's strictly
+opt-in, not the default.
 
 ---
 
@@ -172,6 +241,20 @@ accepted: endpoints, credentials, embedding model/dimension and ingest-time
 settings are rejected with a 422. Overrides are re-validated and never mutate
 the process-wide settings.
 
+### Presets
+
+A `preset` key selects a named bundle of tunable overrides ([app/presets.py](../app/presets.py)):
+`cheap` (no HyDE/reranker, decay proximity, shallower channels), `balanced` (the
+defaults), `max_quality` (wider recall + diversity + deeper rerank). Explicit
+fields override the preset; a process-wide default comes from `SEARCH_PRESET`.
+
+```json
+{"query": "...", "tuning": {"preset": "cheap", "final_top_k": 3}}
+```
+
+Presets are a thin convenience over the same `tuned()` validation — add your own
+to the `PRESETS` dict (every value must be a tunable field, checked at import).
+
 ---
 
 ## Schema guard
@@ -188,6 +271,42 @@ compares it:
 To intentionally change the indexed config, wipe the store
 (`docker compose down -v`) and re-ingest, or set the guard to `warn`/`off` for
 one start. Non-index-affecting tuning (fusion weights, HyDE, ...) never trips it.
+
+---
+
+## Community synthesis (global themes)
+
+engram's default retrieval is *local* (per query). For corpus-wide
+"what are the main themes?" questions there's an opt-in, **offline** GraphRAG-style
+layer (Neo4j + GDS only):
+
+```bash
+# cluster the chunk graph (Leiden) + write an LLM report per community
+docker compose exec api python -m scripts.build_communities        # or --no-reports
+# or via the API
+curl -X POST 'localhost:8088/communities/rebuild?reports=true'
+curl localhost:8088/communities          # list themes with reports + keywords
+# global search: rank themes against a question
+curl -X POST localhost:8088/communities/search \
+  -H 'Content-Type: application/json' -d '{"query": "main themes about X", "top_k": 5}'
+```
+
+It clusters the `Chunk`/`Keyword` graph with `gds.leiden`, names each cluster
+with a report (reusing the LLM seam; skipped gracefully if the LLM is down), and
+persists `(:Community)` nodes + `(:Chunk)-[:IN_COMMUNITY]->(:Community)` in the
+same store. Run it after ingest, never on the search path. On the pgvector
+backend (no GDS) the rebuild endpoint returns `501`. `COMMUNITY_MIN_SIZE` drops
+tiny communities.
+
+---
+
+## Observability
+
+engram keeps observability to stdlib logging (no tracing dependency). Set
+`LOG_LEVEL=DEBUG` to surface a one-line diagnostics summary per `/search` —
+timing, candidate-pool size, shortlist size, and which degradation fallbacks
+(embedding-down, reranker-down/disabled) fired. The degradation paths
+themselves log at `WARNING`, so they show up at the default level too.
 
 ---
 

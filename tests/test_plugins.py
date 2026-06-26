@@ -50,3 +50,22 @@ def test_custom_chunker_is_selectable():
 def test_default_extractor_is_registered():
     assert get_extractor("default") is extract_metadata
     assert "default" in EXTRACTORS
+
+
+async def test_none_extractor_makes_no_llm_call():
+    # client=None proves no HTTP request is attempted
+    result = await get_extractor("none")(None, "some chunk text")
+    assert result.summary == ""
+    assert result.keywords == []
+
+
+async def test_yake_extractor_pulls_keywords_without_an_llm():
+    # client=None proves no HTTP request; YAKE is purely statistical
+    text = (
+        "Apollo 11 was the spaceflight that first landed humans on the Moon. "
+        "Neil Armstrong and Buzz Aldrin landed the lunar module Eagle."
+    )
+    result = await get_extractor("yake")(None, text)
+    assert result.keywords  # extracted something
+    assert all(isinstance(k, str) for k in result.keywords)
+    assert result.summary.startswith("Apollo 11")  # first sentence

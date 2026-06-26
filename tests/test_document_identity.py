@@ -3,9 +3,11 @@ import hashlib
 import pytest
 
 import app.ingest as ingest_mod
+from app import graph
 from app.config import Settings
 from app.ingest import compute_document_id
 from app.llm import ExtractionResult
+from app.store_neo4j import Neo4jStore
 
 
 def test_content_addressed_id_is_deterministic():
@@ -53,13 +55,19 @@ async def _run_ingest(monkeypatch, *, existing=None, document_id=None, source="s
     async def fake_add(driver, doc_id, src):
         calls["added_source"].append((doc_id, src))
 
-    monkeypatch.setattr(ingest_mod.graph, "get_document", fake_get)
-    monkeypatch.setattr(ingest_mod.graph, "delete_document", fake_delete)
-    monkeypatch.setattr(ingest_mod.graph, "save_document", fake_save)
-    monkeypatch.setattr(ingest_mod.graph, "add_document_source", fake_add)
+    async def fake_fetch_chunks(driver, doc_id, embedding_props):
+        return []  # no prior chunks to reuse in these identity tests
+
+    # the Neo4j store delegates to these graph functions, so patching the
+    # graph module reaches the store's calls
+    monkeypatch.setattr(graph, "get_document", fake_get)
+    monkeypatch.setattr(graph, "delete_document", fake_delete)
+    monkeypatch.setattr(graph, "save_document", fake_save)
+    monkeypatch.setattr(graph, "add_document_source", fake_add)
+    monkeypatch.setattr(graph, "fetch_document_chunks", fake_fetch_chunks)
 
     doc_id, n, kws = await ingest_mod.ingest_document(
-        None, None, "hello", source=source, document_id=document_id
+        Neo4jStore(None), None, "hello", source=source, document_id=document_id
     )
     return doc_id, n, kws, calls
 
@@ -107,4 +115,4 @@ async def test_client_supplied_id_fresh(monkeypatch):
 async def test_ingest_requires_a_non_empty_source():
     # every document must be reference-counted, so a source is mandatory
     with pytest.raises(ValueError, match="source"):
-        await ingest_mod.ingest_document(None, None, "hello", source="   ")
+        await ingest_mod.ingest_document(Neo4jStore(None), None, "hello", source="   ")

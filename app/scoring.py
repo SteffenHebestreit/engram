@@ -82,6 +82,31 @@ def autocut(scores: list[float], min_keep: int, min_gap: float) -> int:
     return n
 
 
+def sparse_dot(a: dict[str, float], b: dict[str, float]) -> float:
+    """Dot product of two BGE-M3 learned-sparse term-weight maps (over shared
+    terms) — the exact-term match score the dense vector smooths away."""
+    if not a or not b:
+        return 0.0
+    if len(a) > len(b):  # iterate the smaller map
+        a, b = b, a
+    return sum(weight * b.get(term, 0.0) for term, weight in a.items())
+
+
+def sparse_scores(
+    query_sparse: dict[str, float] | None,
+    candidate_sparse: list[dict[str, float] | None],
+) -> list[float]:
+    """Score each candidate's sparse map against the query's, normalized to
+    [0, 1] (by the max) so it combines with the other fused-score components."""
+    if not query_sparse:
+        return [0.0] * len(candidate_sparse)
+    raw = [sparse_dot(query_sparse, cand or {}) for cand in candidate_sparse]
+    top = max(raw, default=0.0)
+    if top <= 0:
+        return [0.0] * len(raw)
+    return [value / top for value in raw]
+
+
 def median_proximity_scores(embeddings: list[list[float]]) -> list[float]:
     """Score each embedding by cosine similarity to the element-wise median
     vector of the whole result set, mapped to [0, 1].

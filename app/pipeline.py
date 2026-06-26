@@ -15,14 +15,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
-from . import graph
 from .registry import Registry
 from .scoring import dbsf_normalize
 
 if TYPE_CHECKING:
     from .channels import VectorChannel
     from .config import Settings
-    from neo4j import AsyncDriver
+    from .store import Store
 
 
 # ── Fusion ──────────────────────────────────────────────────────────────────
@@ -56,7 +55,9 @@ def _fuse_dbsf_convex(
     candidates: dict[str, dict[str, Any]] = {}
     total_weight = sum(ch.weight for ch in channels) + fulltext_weight
 
-    def add_channel(hits: list[dict[str, Any]], weight: float, origin: str) -> None:
+    def add_channel(
+        hits: list[dict[str, Any]], weight: float, origin: str, name: str
+    ) -> None:
         normalized = dbsf_normalize([hit["score"] for hit in hits])
         for hit, norm_score in zip(hits, normalized):
             cand = candidates.get(hit["id"])
@@ -67,14 +68,18 @@ def _fuse_dbsf_convex(
                     "graph_proximity": 1.0,
                     "graph_distance": 0,
                     "origin": origin,
+                    # provenance: which retrieval channels surfaced this chunk
+                    # (feeds per-stage attribution in the eval harness)
+                    "channels": [],
                 }
             cand["weighted_sum"] += weight * norm_score
+            cand["channels"].append(name)
             if origin == "vector":
                 cand["origin"] = "vector"
 
     for channel, hits in zip(channels, channel_hits):
-        add_channel(hits, channel.weight, "vector")
-    add_channel(fulltext_hits, fulltext_weight, "fulltext")
+        add_channel(hits, channel.weight, "vector", channel.name)
+    add_channel(fulltext_hits, fulltext_weight, "fulltext", "fulltext")
 
     for cand in candidates.values():
         cand["retrieval_score"] = cand.pop("weighted_sum") / total_weight
@@ -89,19 +94,19 @@ def get_fusion(name: str) -> Fusion:
 # Find graph neighbours of the seed chunks to pull into the candidate pool.
 
 Expander = Callable[
-    ["AsyncDriver", list[str], "Settings"], Awaitable[list[dict[str, Any]]]
+    ["Store", list[str], "Settings"], Awaitable[list[dict[str, Any]]]
 ]
 EXPANDERS: Registry[Expander] = Registry("expander")
 
 
 @EXPANDERS.register("sequence_keyword")
 async def _expand_sequence_keyword(
-    driver: "AsyncDriver", seed_ids: list[str], settings: "Settings"
+    store: "Store", seed_ids: list[str], settings: "Settings"
 ) -> list[dict[str, Any]]:
     """Directional NEXT_CHUNK walk + shared-keyword siblings (the document
     profile's traversal)."""
-    return await graph.fetch_siblings(
-        driver, seed_ids, settings.keyword_sibling_limit, settings.sequence_max_hops
+    return await store.fetch_siblings(
+        seed_ids, settings.keyword_sibling_limit, settings.sequence_max_hops
     )
 
 
@@ -114,7 +119,7 @@ def get_expander(name: str) -> Expander:
 # siblings list), feeding both the inherited score and the fused score.
 
 Proximity = Callable[
-    ["AsyncDriver", list[str], list[dict[str, Any]], "Settings"],
+    ["Store", list[str], list[dict[str, Any]], "Settings"],
     Awaitable[list[float]],
 ]
 PROXIMITIES: Registry[Proximity] = Registry("proximity")
@@ -134,18 +139,20 @@ def _decay_proximity(sib: dict[str, Any], settings: "Settings") -> float:
 
 @PROXIMITIES.register("ppr")
 async def _proximity_ppr(
-    driver: "AsyncDriver",
+    store: "Store",
     seed_ids: list[str],
     siblings: list[dict[str, Any]],
     settings: "Settings",
 ) -> list[float]:
-    """Personalized PageRank activation from the seeds, with the decay table as
-    the per-sibling fallback when GDS is unavailable."""
+    """Graph-activation proximity from the seeds (personalized PageRank on the
+    Neo4j backend), with the decay table as the per-sibling fallback when the
+    backend reports no graph-proximity capability (e.g. GDS missing, or the
+    pgvector backend)."""
     ppr: dict[str, float] | None = None
     if siblings:
         sibling_ids = list({s["id"] for s in siblings})
-        ppr = await graph.ppr_proximity(
-            driver, seed_ids, sibling_ids, settings.ppr_damping
+        ppr = await store.graph_proximity(
+            seed_ids, sibling_ids, settings.ppr_damping
         )
     out: list[float] = []
     for sib in siblings:
@@ -156,7 +163,7 @@ async def _proximity_ppr(
 
 @PROXIMITIES.register("decay")
 async def _proximity_decay(
-    driver: "AsyncDriver",
+    store: "Store",
     seed_ids: list[str],
     siblings: list[dict[str, Any]],
     settings: "Settings",

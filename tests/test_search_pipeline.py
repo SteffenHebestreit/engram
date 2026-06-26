@@ -2,8 +2,11 @@ import math
 
 import pytest
 
+from app import graph
+from app import rerank as rerank_mod
 from app import search as search_mod
 from app.config import Settings
+from app.store_neo4j import Neo4jStore
 
 # embeddings chosen so A/B/D/E/F are cohesive and C is the outlier
 CHUNKS = {
@@ -87,16 +90,16 @@ def patched(monkeypatch):
         return [RERANK_SCORES[t] for t in texts]
 
     monkeypatch.setattr(search_mod, "embed_text", fake_embed_text)
-    monkeypatch.setattr(search_mod, "rerank", fake_rerank)
-    monkeypatch.setattr(search_mod.graph, "vector_search", fake_vector_search)
-    monkeypatch.setattr(search_mod.graph, "fulltext_search", fake_fulltext_search)
-    monkeypatch.setattr(search_mod.graph, "fetch_siblings", fake_fetch_siblings)
-    monkeypatch.setattr(search_mod.graph, "ppr_proximity", fake_ppr)
+    monkeypatch.setitem(rerank_mod.RERANKERS._items, "http", fake_rerank)
+    monkeypatch.setattr(graph,"vector_search", fake_vector_search)
+    monkeypatch.setattr(graph,"fulltext_search", fake_fulltext_search)
+    monkeypatch.setattr(graph,"fetch_siblings", fake_fetch_siblings)
+    monkeypatch.setattr(graph,"ppr_proximity", fake_ppr)
     return settings
 
 
 async def test_full_pipeline(patched):
-    results = await search_mod.search(None, None, "test query")
+    results = await search_mod.search(Neo4jStore(None), None, "test query")
     by_id = {r.chunk_id: r for r in results}
 
     assert set(by_id) == {"A", "B", "C", "D", "E", "F"}
@@ -144,12 +147,62 @@ async def test_full_pipeline(patched):
     assert [r.chunk_id for r in results] == ["B", "A", "F", "D", "E", "C"]
 
 
+async def test_sparse_signal_folds_into_fused_score(patched, monkeypatch):
+    patched.sparse_enabled = True
+    patched.sparse_weight = 0.2
+
+    async def fake_query_sparse(client, text):
+        return {"7": 1.0}
+
+    async def fake_get_sparse(driver, chunk_ids):
+        # only A overlaps the query's sparse term; others carry none
+        return {"A": {"7": 5.0}, "B": {"99": 3.0}}
+
+    monkeypatch.setattr(search_mod, "embed_sparse_text", fake_query_sparse)
+    monkeypatch.setattr(graph, "get_sparse_weights", fake_get_sparse)
+
+    results = await search_mod.search(Neo4jStore(None), None, "test query")
+    by_id = {r.chunk_id: r for r in results}
+
+    # A is the only chunk sharing the query's sparse term -> top-normalized 1.0
+    assert math.isclose(by_id["A"].sparse_score, 1.0, abs_tol=1e-6)
+    # B has sparse weights but no overlap; the rest have none at all -> 0.0
+    assert by_id["B"].sparse_score == 0.0
+    assert by_id["F"].sparse_score == 0.0
+
+    # the fused score now carries the weighted sparse term for A
+    a = by_id["A"]
+    assert math.isclose(
+        a.fused_score,
+        0.55 * a.retrieval_score
+        + 0.30 * a.median_score
+        + 0.15 * a.graph_proximity
+        + 0.20 * a.sparse_score,
+        abs_tol=1e-3,
+    )
+
+
+async def test_sparse_disabled_makes_no_extra_store_read(patched, monkeypatch):
+    called = {"n": 0}
+
+    async def boom_get_sparse(driver, chunk_ids):
+        called["n"] += 1
+        return {}
+
+    monkeypatch.setattr(graph, "get_sparse_weights", boom_get_sparse)
+    results = await search_mod.search(Neo4jStore(None), None, "test query")
+
+    # sparse_enabled defaults False -> the sparse read is never attempted
+    assert called["n"] == 0
+    assert all(r.sparse_score == 0.0 for r in results)
+
+
 async def test_ppr_proximity_replaces_decay(patched, monkeypatch):
     async def fake_ppr(driver, seed_ids, candidate_ids, damping):
         return {"D": 0.9, "E": 0.55}
 
-    monkeypatch.setattr(search_mod.graph, "ppr_proximity", fake_ppr)
-    results = await search_mod.search(None, None, "test query")
+    monkeypatch.setattr(graph,"ppr_proximity", fake_ppr)
+    results = await search_mod.search(Neo4jStore(None), None, "test query")
     by_id = {r.chunk_id: r for r in results}
 
     # PPR values are used instead of the decay table; distance still reported
@@ -168,8 +221,8 @@ async def test_autocut_trims_after_score_cliff(patched, monkeypatch):
     async def fake_rerank(client, query, texts):
         return [cliff_scores[t] for t in texts]
 
-    monkeypatch.setattr(search_mod, "rerank", fake_rerank)
-    results = await search_mod.search(None, None, "test query")
+    monkeypatch.setitem(rerank_mod.RERANKERS._items, "http", fake_rerank)
+    results = await search_mod.search(Neo4jStore(None), None, "test query")
     # the rerank scores fall off a cliff between F (0.85) and D (0.2):
     # everything from the cliff on is cut
     assert [r.chunk_id for r in results] == ["B", "A", "F"]
@@ -195,10 +248,10 @@ async def test_hyde_blends_query_and_hypothetical(patched, monkeypatch):
 
     monkeypatch.setattr(search_mod, "generate_hypothetical_answer", fake_generate)
     monkeypatch.setattr(search_mod, "embed_texts", fake_embed_texts)
-    monkeypatch.setattr(search_mod.graph, "vector_search", recording_vector_search)
-    monkeypatch.setattr(search_mod.graph, "fulltext_search", fake_fulltext)
+    monkeypatch.setattr(graph,"vector_search", recording_vector_search)
+    monkeypatch.setattr(graph,"fulltext_search", fake_fulltext)
 
-    await search_mod.search(None, None, "test query")
+    await search_mod.search(Neo4jStore(None), None, "test query")
 
     # 50/50 blend of query and hypothetical embedding, re-normalized
     expected = 1 / math.sqrt(2)
@@ -209,7 +262,7 @@ async def test_hyde_blends_query_and_hypothetical(patched, monkeypatch):
 
 
 async def test_top_k_limits_results(patched):
-    results = await search_mod.search(None, None, "test query", top_k=2)
+    results = await search_mod.search(Neo4jStore(None), None, "test query", top_k=2)
     assert len(results) == 2
     assert [r.chunk_id for r in results] == ["B", "A"]
 
@@ -217,22 +270,22 @@ async def test_top_k_limits_results(patched):
 async def test_tuning_overrides_search_shaping(patched):
     # final_top_k via per-request tuning trims to the top 2 by rerank score
     results = await search_mod.search(
-        None, None, "test query", tuning={"final_top_k": 2}
+        Neo4jStore(None), None, "test query", tuning={"final_top_k": 2}
     )
     assert [r.chunk_id for r in results] == ["B", "A"]
 
 
 async def test_tuning_rejects_non_tunable_field(patched):
     with pytest.raises(ValueError, match="non-tunable"):
-        await search_mod.search(None, None, "test query", tuning={"neo4j_password": "x"})
+        await search_mod.search(Neo4jStore(None), None, "test query", tuning={"neo4j_password": "x"})
 
 
 async def test_reranker_down_falls_back_to_fused_score(patched, monkeypatch):
     async def fake_rerank(client, query, texts):
         return None  # reranker unavailable
 
-    monkeypatch.setattr(search_mod, "rerank", fake_rerank)
-    results = await search_mod.search(None, None, "test query")
+    monkeypatch.setitem(rerank_mod.RERANKERS._items, "http", fake_rerank)
+    results = await search_mod.search(Neo4jStore(None), None, "test query")
 
     # search still returns results; final order and rerank_score come from the
     # fused score instead of breaking
@@ -241,6 +294,53 @@ async def test_reranker_down_falls_back_to_fused_score(patched, monkeypatch):
         assert r.rerank_score == r.fused_score
     fused = [r.fused_score for r in results]
     assert fused == sorted(fused, reverse=True)
+
+
+async def test_reranker_disabled_uses_fused_score(patched, monkeypatch):
+    patched.reranker_enabled = False
+    called = {"n": 0}
+
+    async def boom_rerank(client, query, texts):
+        called["n"] += 1
+        raise AssertionError("reranker must not be called when disabled")
+
+    monkeypatch.setitem(rerank_mod.RERANKERS._items, "http", boom_rerank)
+    results = await search_mod.search(Neo4jStore(None), None, "test query")
+
+    # the cross-encoder was skipped entirely; ordering/scores come from fused
+    assert called["n"] == 0
+    assert results
+    for r in results:
+        assert r.rerank_score == r.fused_score
+    fused = [r.fused_score for r in results]
+    assert fused == sorted(fused, reverse=True)
+
+
+async def test_cheap_preset_skips_reranker(patched, monkeypatch):
+    called = {"n": 0}
+
+    async def boom_rerank(client, query, texts):
+        called["n"] += 1
+        raise AssertionError("cheap preset must disable the reranker")
+
+    monkeypatch.setitem(rerank_mod.RERANKERS._items, "http", boom_rerank)
+    results = await search_mod.search(
+        Neo4jStore(None), None, "test query", tuning={"preset": "cheap"}
+    )
+    assert called["n"] == 0  # cheap preset set reranker_enabled=False
+    assert results
+
+
+async def test_custom_reranker_strategy_is_selectable(patched, monkeypatch):
+    patched.reranker_strategy = "reverse"
+
+    async def reverse_reranker(client, query, texts):
+        # score by reverse input order so we can prove this strategy ran
+        return [float(i) for i in range(len(texts), 0, -1)]
+
+    monkeypatch.setitem(rerank_mod.RERANKERS._items, "reverse", reverse_reranker)
+    results = await search_mod.search(Neo4jStore(None), None, "test query")
+    assert results  # the custom strategy was resolved and used without error
 
 
 async def test_embeddings_down_falls_back_to_fulltext_only(patched, monkeypatch):
@@ -254,9 +354,9 @@ async def test_embeddings_down_falls_back_to_fulltext_only(patched, monkeypatch)
         return []
 
     monkeypatch.setattr(search_mod, "embed_text", boom_embed)
-    monkeypatch.setattr(search_mod.graph, "vector_search", counting_vector_search)
+    monkeypatch.setattr(graph,"vector_search", counting_vector_search)
 
-    results = await search_mod.search(None, None, "test query")
+    results = await search_mod.search(Neo4jStore(None), None, "test query")
 
     # no vector channel was queried, yet search still returns lexical results
     assert calls["vector"] == 0
@@ -280,7 +380,7 @@ async def test_no_hits_returns_empty(monkeypatch):
         return []
 
     monkeypatch.setattr(search_mod, "embed_text", fake_embed_text)
-    monkeypatch.setattr(search_mod.graph, "vector_search", fake_vector_search)
-    monkeypatch.setattr(search_mod.graph, "fulltext_search", fake_fulltext_search)
+    monkeypatch.setattr(graph,"vector_search", fake_vector_search)
+    monkeypatch.setattr(graph,"fulltext_search", fake_fulltext_search)
 
-    assert await search_mod.search(None, None, "anything") == []
+    assert await search_mod.search(Neo4jStore(None), None, "anything") == []

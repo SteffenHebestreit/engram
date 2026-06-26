@@ -1,10 +1,9 @@
 import math
 
-import pytest
-
-from app import pipeline
+from app import graph, pipeline
 from app.channels import resolve_vector_channels
 from app.config import Settings
+from app.store_neo4j import Neo4jStore
 
 
 def _sib(chunk_id, via, distance, strength):
@@ -51,8 +50,10 @@ async def test_default_expander_calls_fetch_siblings(monkeypatch):
         seen["args"] = (ids, kw_limit, hops)
         return [{"id": "sib"}]
 
-    monkeypatch.setattr(pipeline.graph, "fetch_siblings", fake_fetch)
-    out = await pipeline.get_expander("sequence_keyword")(None, ["seed"], Settings())
+    monkeypatch.setattr(graph, "fetch_siblings", fake_fetch)
+    out = await pipeline.get_expander("sequence_keyword")(
+        Neo4jStore(None), ["seed"], Settings()
+    )
     assert out == [{"id": "sib"}]
     assert seen["args"] == (["seed"], Settings().keyword_sibling_limit, Settings().sequence_max_hops)
 
@@ -74,8 +75,8 @@ async def test_ppr_proximity_falls_back_to_decay_per_sibling(monkeypatch):
     async def fake_ppr(driver, seed_ids, cand_ids, damping):
         return {"X": 0.9}  # Y missing -> decay fallback
 
-    monkeypatch.setattr(pipeline.graph, "ppr_proximity", fake_ppr)
+    monkeypatch.setattr(graph, "ppr_proximity", fake_ppr)
     sibs = [_sib("X", "sequence", 1, 1.0), _sib("Y", "sequence", 1, 1.0)]
-    out = await pipeline.get_proximity("ppr")(None, ["s"], sibs, Settings())
+    out = await pipeline.get_proximity("ppr")(Neo4jStore(None), ["s"], sibs, Settings())
     assert math.isclose(out[0], 0.9, abs_tol=1e-9)
     assert math.isclose(out[1], 0.7, abs_tol=1e-9)  # 0.7 ** 1

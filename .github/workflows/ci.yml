@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# cancel superseded runs on the same ref
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # build the test image once; reused by the lint + test steps below
+      - name: Build test image
+        run: docker compose build tests
+
+      - name: Lint (ruff)
+        run: docker compose run --rm tests ruff check app scripts tests
+
+      # starts Neo4j (+ GDS) and Postgres (pgvector) via depends_on, then runs
+      # the whole suite including both live-database integration tests
+      - name: Tests
+        run: docker compose run --rm tests

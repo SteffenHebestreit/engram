@@ -1,0 +1,4 @@
+# Optional: the MCP server adapter (python -m app.mcp_server). The core engram
+# API does not need this — it's only for exposing engram as an MCP tool.
+-r requirements.txt
+mcp>=1.2

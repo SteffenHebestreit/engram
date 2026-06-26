@@ -1,0 +1,45 @@
+# Optional overlay: run the multi-output BGE-M3 sidecar and point engram's API
+# at it for dense + learned-sparse retrieval. Compose it on top of the root
+# stack (same `engram` project, so it merges with the existing `api` service):
+#
+#   docker compose -f docker-compose.yml -f deploy/bge-m3/docker-compose.yml up --build
+#
+# This serves dense embeddings, sparse term weights and ColBERT rerank from one
+# model. To also use the cheap ColBERT reranker instead of the cross-encoder,
+# add  RERANKER_STRATEGY: colbert  to the api environment below.
+name: engram
+
+services:
+  bge-m3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: engram-bge-m3
+    # MODEL_NAME / USE_FP16 / MAX_LENGTH / BATCH_SIZE are overridable here
+    environment:
+      MODEL_NAME: BAAI/bge-m3
+      USE_FP16: "false"   # CPU image; set true on a GPU base
+    ports:
+      - "8090:8090"
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  api:
+    environment:
+      # one sidecar backs all three signals
+      EMBEDDING_API_BASE: http://bge-m3:8090/v1
+      SPARSE_API_BASE: http://bge-m3:8090
+      COLBERT_API_BASE: http://bge-m3:8090
+      # turn the learned-sparse exact-term channel on
+      SPARSE_ENABLED: "true"
+    depends_on:
+      bge-m3:
+        condition: service_healthy
+
+volumes:
+  hf_cache:

@@ -13,9 +13,10 @@ from pathlib import Path
 
 import httpx
 
-from app import graph
+from app.config import get_settings
 from app.ingest import ingest_document
 from app.search import search
+from app.store import create_store
 
 SAMPLE_TEXT = """\
 Graph databases store data as nodes and relationships instead of tables. \
@@ -52,23 +53,24 @@ async def main() -> None:
             "your embedding/LLM/reranker services first."
         )
 
-    driver = graph.create_driver()
+    store = create_store(get_settings())
+    await store.connect()
     doc_id = None
     try:
-        await driver.verify_connectivity()
-        await graph.init_schema(driver)
+        await store.verify_connectivity()
+        await store.init_schema()
 
         async with httpx.AsyncClient() as http:
             print("ingesting sample document...")
             doc_id, chunk_count, keywords = await ingest_document(
-                driver, http, SAMPLE_TEXT, title="RAG demo", source="demo"
+                store, http, SAMPLE_TEXT, title="RAG demo", source="demo"
             )
             print(f"  document {doc_id}: {chunk_count} chunks")
             print(f"  extracted keywords: {', '.join(keywords)}\n")
 
             for query in QUERIES:
                 print(f"query: {query}")
-                results = await search(driver, http, query, top_k=3)
+                results = await search(store, http, query, top_k=3)
                 for rank, r in enumerate(results, 1):
                     print(
                         f"  {rank}. [{r.origin}] rerank={r.rerank_score:.3f} "
@@ -78,9 +80,9 @@ async def main() -> None:
                 print()
     finally:
         if doc_id:
-            await graph.delete_document(driver, doc_id)
+            await store.delete_document(doc_id)
             print(f"cleaned up demo document {doc_id}")
-        await driver.close()
+        await store.close()
 
 
 if __name__ == "__main__":

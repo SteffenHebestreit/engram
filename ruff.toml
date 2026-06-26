@@ -1,0 +1,13 @@
+target-version = "py312"
+line-length = 100
+
+[lint]
+# high-signal rules: pyflakes (unused imports/vars, undefined names), import
+# sorting, basic pycodestyle, pyupgrade and a few bugbear checks. E501
+# (line-too-long) is off — the codebase favours long descriptive comments.
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501", "B008"]  # B008: FastAPI Depends()/Query() defaults are idiomatic
+
+[lint.per-file-ignores]
+# tests poke at private registry internals on purpose
+"tests/*" = ["E402"]

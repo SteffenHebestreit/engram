@@ -1,0 +1,4 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+# BGE-M3 multi-output encoder (dense + learned-sparse + ColBERT in one pass)
+FlagEmbedding>=1.3

@@ -1,29 +1,30 @@
 import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING
 
 import httpx
 import numpy as np
-from neo4j import AsyncDriver
 
-from . import graph
 from .channels import resolve_vector_channels
 from .config import get_settings
 
 if TYPE_CHECKING:
     from .config import Settings
-from .embeddings import embed_text, embed_texts
+    from .store import Store
+from .embeddings import embed_sparse_text, embed_text, embed_texts
 from .llm import generate_hypothetical_answer
 from .models import SearchResult
 from .pipeline import get_expander, get_fusion, get_proximity
-from .rerank import rerank
-from .scoring import autocut, median_proximity_scores, mmr_select
+from .presets import apply_preset
+from .rerank import get_reranker
+from .scoring import autocut, median_proximity_scores, mmr_select, sparse_scores
 
 log = logging.getLogger(__name__)
 
 
 async def search(
-    driver: AsyncDriver,
+    store: "Store",
     http: httpx.AsyncClient,
     query: str,
     top_k: int | None = None,
@@ -46,14 +47,18 @@ async def search(
        crowd out other relevant regions
     6. rerank, sort by reranker score and autocut after the first score cliff
     """
-    settings = get_settings().tuned(tuning or {})
+    started = time.perf_counter()
+    base = get_settings()
+    # resolve a named preset (env default or tuning["preset"]) into concrete
+    # overrides, with explicit per-request fields winning, then validate
+    settings = base.tuned(apply_preset(tuning, base.search_preset))
     final_top_k = top_k or settings.final_top_k
 
     # the lexical channel only needs the raw query text, so it runs while the
     # query embedding is computed — which can take a while when HyDE adds an
     # LLM round trip
     fulltext_task = asyncio.create_task(
-        graph.fulltext_search(driver, query, settings.top_k_per_index)
+        store.fulltext_search(query, settings.top_k_per_index)
     )
     try:
         query_emb = await _query_embedding(http, query, settings)
@@ -73,7 +78,7 @@ async def search(
     channels = resolve_vector_channels(settings) if query_emb is not None else []
     *channel_hits, fulltext_hits = await asyncio.gather(
         *(
-            graph.vector_search(driver, ch.index, query_emb, settings.top_k_per_index)
+            store.vector_search(ch, query_emb, settings.top_k_per_index)
             for ch in channels
         ),
         fulltext_task,
@@ -99,14 +104,14 @@ async def search(
     seed_scores = {s["id"]: s["retrieval_score"] for s in seeds}
 
     siblings = await get_expander(settings.expander_strategy)(
-        driver, list(seed_scores), settings
+        store, list(seed_scores), settings
     )
 
     # graph proximity per sibling (parallel to `siblings`): personalized
     # PageRank spreads activation from the seeds and accumulates over multiple
     # paths; the decay formula is the fallback when GDS is unavailable
     proximities = await get_proximity(settings.graph_proximity_mode)(
-        driver, list(seed_scores), siblings, settings
+        store, list(seed_scores), siblings, settings
     )
 
     for sib, proximity in zip(siblings, proximities):
@@ -120,6 +125,7 @@ async def search(
                 "graph_proximity": proximity,
                 "graph_distance": sib["distance"],
                 "origin": f"sibling:{sib['via']}:{sib['direction']}",
+                "channels": [f"graph:{sib['via']}"],
             }
             continue
         # already pooled (direct hit or sibling of another seed): keep the
@@ -128,20 +134,39 @@ async def search(
             existing["retrieval_score"] = score
         if proximity > existing["graph_proximity"]:
             existing["graph_proximity"] = proximity
+        # credit the graph reach in the provenance even when a retrieval channel
+        # also surfaced this chunk (so attribution counts graph's contribution)
+        existing.setdefault("channels", []).append(f"graph:{sib['via']}")
         if existing["origin"].startswith("sibling:") and sib["distance"] < existing["graph_distance"]:
             existing["graph_distance"] = sib["distance"]
             existing["origin"] = f"sibling:{sib['via']}:{sib['direction']}"
 
     pool = list(candidates.values())
 
+    # memory write-path (M1): collapse near-duplicate clusters so a re-ingested
+    # paraphrase flood can't crowd distinct material out of the shortlist. Opt-in;
+    # non-destructive (the duplicate chunks still exist, just not surfaced twice).
+    if settings.dedup_enabled:
+        pool = await _collapse_near_dups(store, pool)
+
+    # optional learned-sparse (BGE-M3 lexical) re-scoring of the candidate pool:
+    # an exact-term signal that dense pooling smooths away (rare entities, IDs,
+    # numbers). Opt-in and degrades to all-zeros when off / endpoint down.
+    sparse_pool_scores = await _sparse_pool_scores(store, http, query, pool, settings)
+
     # proximity to the median of the whole result set; outliers score low
     median_scores = median_proximity_scores([c["content_embedding"] for c in pool])
-    for cand, median_score in zip(pool, median_scores):
+    for cand, median_score, sparse_score in zip(pool, median_scores, sparse_pool_scores):
         cand["median_score"] = median_score
+        # sparse is a re-scoring signal over the existing pool, not a retrieval
+        # channel — it doesn't *surface* candidates, so its contribution lives in
+        # `sparse_score`, not in `channels` (which is retrieval provenance)
+        cand["sparse_score"] = sparse_score
         cand["fused_score"] = (
             settings.retrieval_weight * cand["retrieval_score"]
             + settings.median_weight * median_score
             + settings.graph_proximity_weight * cand["graph_proximity"]
+            + settings.sparse_weight * sparse_score
         )
 
     # MMR shortlist: overlapping/adjacent chunks carry near-identical content,
@@ -154,11 +179,15 @@ async def search(
     )
     shortlist = [pool[i] for i in picked]
 
-    rerank_scores = await rerank(http, query, [c["text"] for c in shortlist])
-    if rerank_scores is None:
-        # reranker unavailable: degrade to the fused score as the final signal
-        # rather than failing the whole search (cf. the HyDE and PPR fallbacks)
-        log.warning("reranker unavailable; falling back to fused score")
+    rerank_scores = None
+    if settings.reranker_enabled:
+        reranker = get_reranker(settings.reranker_strategy)
+        rerank_scores = await reranker(http, query, [c["text"] for c in shortlist])
+    rerank_fallback = rerank_scores is None
+    if rerank_fallback:
+        # reranker unavailable or disabled: degrade to the fused score as the
+        # final signal rather than failing the whole search (cf. HyDE and PPR)
+        log.warning("reranker unavailable or disabled; falling back to fused score")
         rerank_scores = [c["fused_score"] for c in shortlist]
     for cand, score in zip(shortlist, rerank_scores):
         cand["rerank_score"] = score
@@ -173,6 +202,19 @@ async def search(
         )
         final = final[:keep]
 
+    # one structured diagnostics line per search (visible at LOG_LEVEL=DEBUG)
+    log.debug(
+        "search done: query_words=%d embed_fallback=%s candidates=%d "
+        "shortlist=%d rerank_fallback=%s results=%d elapsed_ms=%.1f",
+        len(query.split()),
+        query_emb is None,
+        len(candidates),
+        len(shortlist),
+        rerank_fallback,
+        len(final),
+        (time.perf_counter() - started) * 1000.0,
+    )
+
     return [
         SearchResult(
             chunk_id=c["id"],
@@ -181,15 +223,72 @@ async def search(
             summary=c["summary"] or "",
             keywords=c["keywords"] or [],
             origin=c["origin"],
+            channels=sorted(set(c.get("channels", []))),
+            near_dup_of=c.get("near_dup_of"),
             graph_distance=c["graph_distance"],
             graph_proximity=round(c["graph_proximity"], 4),
             retrieval_score=round(c["retrieval_score"], 4),
             median_score=round(c["median_score"], 4),
+            sparse_score=round(c.get("sparse_score", 0.0), 4),
             fused_score=round(c["fused_score"], 4),
             rerank_score=round(c["rerank_score"], 4),
         )
         for c in final
     ]
+
+
+async def _collapse_near_dups(store: "Store", pool: list[dict]) -> list[dict]:
+    """Collapse near-duplicate clusters in the candidate pool to one
+    representative each (the best-retrieved member), so re-ingested paraphrases
+    don't crowd out distinct chunks. Non-destructive — the dropped members still
+    exist in the store; they're just not surfaced twice in one result set. The
+    surviving representative records its canonical link in `near_dup_of`."""
+    links = await store.get_near_dup_links([c["id"] for c in pool])
+    if not links:
+        return pool
+
+    def canonical(cid: str) -> str:
+        # follow the link chain to the cluster's canonical id (cycle-guarded)
+        seen: set[str] = set()
+        while cid in links and cid not in seen:
+            seen.add(cid)
+            cid = links[cid]
+        return cid
+
+    best: dict[str, dict] = {}
+    for cand in pool:
+        cand["near_dup_of"] = links.get(cand["id"])
+        key = canonical(cand["id"])
+        current = best.get(key)
+        if current is None or cand["retrieval_score"] > current["retrieval_score"]:
+            best[key] = cand
+    return list(best.values())
+
+
+async def _sparse_pool_scores(
+    store: "Store",
+    http: httpx.AsyncClient,
+    query: str,
+    pool: list[dict],
+    settings: "Settings",
+) -> list[float]:
+    """Per-candidate learned-sparse score in [0, 1], or all-zeros.
+
+    Embeds the query's BGE-M3 sparse vector and dots it against each candidate's
+    stored sparse weights (fetched in one batched store read over the pool). Any
+    missing piece — feature off, no sparse endpoint, weights never ingested —
+    yields zeros, so the dense pipeline is unaffected (cf. HyDE / reranker
+    fallbacks).
+    """
+    if not settings.sparse_enabled:
+        return [0.0] * len(pool)
+    query_sparse = await embed_sparse_text(http, query)
+    if not query_sparse:
+        return [0.0] * len(pool)
+    weights = await store.get_sparse_weights([c["id"] for c in pool])
+    if not weights:
+        return [0.0] * len(pool)
+    return sparse_scores(query_sparse, [weights.get(c["id"]) for c in pool])
 
 
 async def _query_embedding(
@@ -203,6 +302,10 @@ async def _query_embedding(
     well-formed queries), and any LLM failure falls back to the plain query.
     The fulltext channel always keeps the raw query text.
     """
+    # instruction-tuned embedders want a task instruction on the query side
+    # (empty by default — a no-op for BGE-M3); the HyDE hypothetical is
+    # answer/passage-shaped, so it takes the passage-side instruction instead
+    q_instr = settings.query_instruction
     use_hyde = (
         settings.hyde_enabled
         and len(query.split()) <= settings.hyde_max_query_words
@@ -210,10 +313,12 @@ async def _query_embedding(
     if use_hyde:
         hypothetical = await generate_hypothetical_answer(http, query)
         if hypothetical:
-            query_emb, hypo_emb = await embed_texts(http, [query, hypothetical])
+            query_emb, hypo_emb = await embed_texts(
+                http, [q_instr + query, settings.passage_instruction + hypothetical]
+            )
             w = settings.hyde_query_weight
             blended = w * np.asarray(query_emb) + (1.0 - w) * np.asarray(hypo_emb)
             norm = np.linalg.norm(blended)
             if norm > 0:
                 return (blended / norm).tolist()
-    return await embed_text(http, query)
+    return await embed_text(http, q_instr + query)

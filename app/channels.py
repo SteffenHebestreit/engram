@@ -72,29 +72,41 @@ def get_channel_source(name: str) -> ChannelSource:
 
 def resolve_vector_channels(settings: "Settings") -> list[VectorChannel]:
     """The active channel set: an explicit ``vector_channels`` override, else
-    the built-in three weighted from the legacy ``*_channel_weight`` settings."""
+    the built-in channels weighted from the legacy ``*_channel_weight`` settings.
+
+    The content channel is always present (it owns the canonical
+    ``content_embedding`` geometry vector). The summary/keywords channels can be
+    dropped via ``summary_channel_enabled`` / ``keywords_channel_enabled`` to
+    cut embeddings-per-chunk."""
     if settings.vector_channels is not None:
         return settings.vector_channels
-    return [
+    channels = [
         VectorChannel(
             name="content",
             index="chunk_content_idx",
             embedding_prop="content_embedding",
             source="text",
             weight=settings.content_channel_weight,
-        ),
-        VectorChannel(
-            name="summary",
-            index="chunk_summary_idx",
-            embedding_prop="summary_embedding",
-            source="summary",
-            weight=settings.summary_channel_weight,
-        ),
-        VectorChannel(
-            name="keywords",
-            index="chunk_keywords_idx",
-            embedding_prop="keywords_embedding",
-            source="keywords",
-            weight=settings.keywords_channel_weight,
-        ),
+        )
     ]
+    if settings.summary_channel_enabled:
+        channels.append(
+            VectorChannel(
+                name="summary",
+                index="chunk_summary_idx",
+                embedding_prop="summary_embedding",
+                source="summary",
+                weight=settings.summary_channel_weight,
+            )
+        )
+    if settings.keywords_channel_enabled:
+        channels.append(
+            VectorChannel(
+                name="keywords",
+                index="chunk_keywords_idx",
+                embedding_prop="keywords_embedding",
+                source="keywords",
+                weight=settings.keywords_channel_weight,
+            )
+        )
+    return channels

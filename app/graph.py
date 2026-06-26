@@ -17,6 +17,9 @@ FULLTEXT_INDEX = "chunk_fulltext"
 # in-memory GDS projection used for personalized PageRank
 PPR_GRAPH = "engram_ppr"
 
+# in-memory GDS projection used for Leiden community detection
+COMMUNITY_GRAPH = "engram_community"
+
 # marker node holding the index schema signature (see schema_signature)
 SCHEMA_META_ID = "schema"
 
@@ -30,6 +33,17 @@ _SCHEMA_MISMATCH_MSG = (
 # None = not yet probed; probed once per process, since the plugin set only
 # changes with a database restart
 _gds_available: bool | None = None
+
+
+def _loads_sparse(value: Any) -> dict[str, float] | None:
+    """Parse a stored sparse term-weight JSON string back into {token: weight},
+    tolerating nulls / malformed values (sparse is an optional signal)."""
+    if not value:
+        return None
+    try:
+        return {str(k): float(v) for k, v in json.loads(value).items()}
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 def create_driver() -> AsyncDriver:
@@ -55,6 +69,13 @@ def schema_signature(settings: Any) -> str:
             (c.index, c.embedding_prop) for c in resolve_vector_channels(settings)
         ),
     }
+    # the passage-side instruction changes the stored geometry, so a change must
+    # invalidate existing indexes (the query side is query-time only). Added only
+    # when set, so turning the default-empty case on/off stays backward-compatible
+    # — an existing store's signature is unchanged until a passage instruction is
+    # actually configured.
+    if settings.passage_instruction:
+        payload["passage_instruction"] = settings.passage_instruction
     raw = json.dumps(payload, sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -148,7 +169,9 @@ async def save_document(
 
     Each chunk dict needs: id, seq, text, summary, keywords, and an
     `embeddings` map of {embedding_prop: vector} (one entry per active vector
-    channel, e.g. content_embedding/summary_embedding/keywords_embedding).
+    channel, e.g. content_embedding/summary_embedding/keywords_embedding). An
+    optional `sparse_weights` map of {token: weight} (BGE-M3 learned-sparse) is
+    stored as a JSON string when present — Neo4j has no nested-map property type.
 
     Relations created:
       (Chunk)-[:PART_OF]->(Document)
@@ -156,6 +179,17 @@ async def save_document(
       (Chunk)-[:HAS_KEYWORD]->(Keyword)   shared Keyword nodes connect chunks
                                           across the whole graph
     """
+    # serialize the optional sparse term-weight map to a JSON string property
+    # (a nested map is not a valid Neo4j property value); null clears it
+    chunks = [
+        {
+            **row,
+            "sparse_json": json.dumps(row["sparse_weights"])
+            if row.get("sparse_weights")
+            else None,
+        }
+        for row in chunks
+    ]
     async with driver.session() as session:
         await session.run(
             """
@@ -176,7 +210,9 @@ async def save_document(
                 c.seq = row.seq,
                 c.text = row.text,
                 c.summary = row.summary,
-                c.keywords = row.keywords
+                c.keywords = row.keywords,
+                c.sparse_weights = row.sparse_json,
+                c.near_dup_of = row.near_dup_of
             SET c += row.embeddings
             MERGE (c)-[:PART_OF]->(d)
             WITH c, row
@@ -243,6 +279,43 @@ async def vector_search(
             index_name=index_name,
             k=k,
             embedding=embedding,
+        )
+        return [dict(record) async for record in result]
+
+
+async def nearest_chunks(
+    driver: AsyncDriver,
+    embedding: list[float],
+    k: int,
+    min_sim: float,
+    exclude_doc_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Content-vector nearest neighbours of `embedding` (memory write-path
+    near-duplicate primitive). Reuses the content vector index; ANN returns k,
+    then we filter by `min_sim` and optionally exclude one document."""
+    channels = resolve_vector_channels(get_settings())
+    content = next(
+        (c for c in channels if c.embedding_prop == "content_embedding"), channels[0]
+    )
+    async with driver.session() as session:
+        result = await session.run(
+            """
+            CALL db.index.vector.queryNodes($index, $k, $embedding)
+            YIELD node, score
+            // Neo4j normalizes cosine to (1+cos)/2; convert back to raw cosine
+            // so `min_sim` is the same scale as the pgvector backend (1 - dist)
+            WITH node, 2.0 * score - 1.0 AS sim
+            WHERE sim >= $min_sim
+              AND ($exclude IS NULL OR node.doc_id <> $exclude)
+            RETURN node.id AS id, node.doc_id AS doc_id, node.seq AS seq,
+                   node.text AS text, sim
+            ORDER BY sim DESC
+            """,
+            index=content.index,
+            k=k,
+            embedding=embedding,
+            min_sim=min_sim,
+            exclude=exclude_doc_id,
         )
         return [dict(record) async for record in result]
 
@@ -475,6 +548,84 @@ async def list_documents(driver: AsyncDriver) -> list[dict[str, Any]]:
         return [dict(record) async for record in result]
 
 
+async def fetch_document_chunks(
+    driver: AsyncDriver, doc_id: str, embedding_props: list[str]
+) -> list[dict[str, Any]]:
+    """Existing chunks of a document with their text, metadata and the named
+    embedding vectors, for incremental re-ingest (reuse unchanged chunks)."""
+    async with driver.session() as session:
+        result = await session.run(
+            """
+            MATCH (c:Chunk {doc_id: $id})
+            RETURN c.text AS text, c.summary AS summary,
+                   c.keywords AS keywords, properties(c) AS props
+            """,
+            id=doc_id,
+        )
+        out = []
+        async for record in result:
+            props = record["props"]
+            out.append(
+                {
+                    "text": record["text"],
+                    "summary": record["summary"],
+                    "keywords": record["keywords"],
+                    "embeddings": {p: props.get(p) for p in embedding_props},
+                    "sparse_weights": _loads_sparse(props.get("sparse_weights")),
+                }
+            )
+        return out
+
+
+async def get_sparse_weights(
+    driver: AsyncDriver, chunk_ids: list[str]
+) -> dict[str, dict[str, float]]:
+    """Stored BGE-M3 learned-sparse term-weight maps for the given chunks.
+
+    Returns `{chunk_id: {token: weight}}`, omitting chunks ingested without
+    sparse weights. Read once per search over the assembled candidate pool, so
+    the sparse signal needs no separate index and no change to the hot read
+    queries (vector/fulltext/sibling).
+    """
+    if not chunk_ids:
+        return {}
+    async with driver.session() as session:
+        result = await session.run(
+            """
+            MATCH (c:Chunk)
+            WHERE c.id IN $ids AND c.sparse_weights IS NOT NULL
+            RETURN c.id AS id, c.sparse_weights AS sparse
+            """,
+            ids=chunk_ids,
+        )
+        out: dict[str, dict[str, float]] = {}
+        async for record in result:
+            parsed = _loads_sparse(record["sparse"])
+            if parsed:
+                out[record["id"]] = parsed
+        return out
+
+
+async def get_near_dup_links(
+    driver: AsyncDriver, chunk_ids: list[str]
+) -> dict[str, str]:
+    """`{chunk_id: canonical_chunk_id}` for chunks linked as near-duplicates
+    (memory write-path). Read once per search over the candidate pool to collapse
+    near-duplicate clusters; chunks without a link are omitted."""
+    if not chunk_ids:
+        return {}
+    async with driver.session() as session:
+        result = await session.run(
+            """
+            MATCH (c:Chunk)
+            WHERE c.id IN $ids AND c.near_dup_of IS NOT NULL
+            RETURN c.id AS id, c.near_dup_of AS canonical
+            """,
+            ids=chunk_ids,
+        )
+        return {record["id"]: record["canonical"] async for record in result}
+
+
 async def fetch_siblings(
     driver: AsyncDriver,
     chunk_ids: list[str],
@@ -646,6 +797,123 @@ async def ppr_proximity(
         for r in rows
         if not r["is_seed"]
     }
+
+
+async def detect_communities(
+    driver: AsyncDriver, min_size: int = 1
+) -> list[dict[str, Any]] | None:
+    """Leiden community detection over the projected chunk/keyword graph.
+
+    Returns one entry per community — `{id, chunk_ids, summaries, keyword_lists}`
+    (ordered largest first) — or None when GDS/Leiden is unavailable, so the
+    caller can treat communities as an unsupported capability and degrade.
+    """
+    if not await gds_available(driver):
+        return None
+    labels, rel_config = resolve_profile(get_settings()).projection_spec()
+    try:
+        async with driver.session() as session:
+            result = await session.run("MATCH (c:Chunk) RETURN count(c) AS n")
+            if (await result.single())["n"] == 0:
+                return []
+            # fresh projection (drop is a no-op when absent)
+            await session.run(
+                "CALL gds.graph.drop($g, false) YIELD graphName RETURN graphName",
+                g=COMMUNITY_GRAPH,
+            )
+            await session.run(
+                "CALL gds.graph.project($g, $labels, $rel)",
+                g=COMMUNITY_GRAPH,
+                labels=labels,
+                rel=rel_config,
+            )
+            result = await session.run(
+                """
+                CALL gds.leiden.stream($g, {}) YIELD nodeId, communityId
+                WITH gds.util.asNode(nodeId) AS n, communityId
+                WHERE n:Chunk
+                WITH communityId AS id, collect(n) AS chunks
+                WHERE size(chunks) >= $min_size
+                RETURN id,
+                       [c IN chunks | c.id] AS chunk_ids,
+                       [c IN chunks | c.summary] AS summaries,
+                       [c IN chunks | c.keywords] AS keyword_lists
+                ORDER BY size(chunk_ids) DESC
+                """,
+                g=COMMUNITY_GRAPH,
+                min_size=int(min_size),
+            )
+            rows = [dict(record) async for record in result]
+            await session.run(
+                "CALL gds.graph.drop($g, false) YIELD graphName RETURN graphName",
+                g=COMMUNITY_GRAPH,
+            )
+        return rows
+    except Exception:
+        # GDS present but Leiden missing/misconfigured, projection raced, ...:
+        # treat as "no community support" rather than failing
+        log.warning("community detection failed; treating as unavailable")
+        return None
+
+
+async def save_communities(
+    driver: AsyncDriver, communities: list[dict[str, Any]]
+) -> int:
+    """Replace the community layer: drop existing Community nodes, then write the
+    given communities and link their member chunks via IN_COMMUNITY."""
+    async with driver.session() as session:
+        await session.run("MATCH (comm:Community) DETACH DELETE comm")
+        for comm in communities:
+            await session.run(
+                """
+                CREATE (comm:Community {id: $id})
+                SET comm.title = $title, comm.summary = $summary,
+                    comm.keywords = $keywords, comm.member_count = $member_count,
+                    comm.report_embedding = $report_embedding,
+                    comm.updated_at = datetime()
+                WITH comm
+                UNWIND $chunk_ids AS cid
+                MATCH (ch:Chunk {id: cid})
+                MERGE (ch)-[:IN_COMMUNITY]->(comm)
+                """,
+                id=str(comm["id"]),
+                title=comm.get("title", ""),
+                summary=comm.get("summary", ""),
+                keywords=comm.get("keywords", []),
+                member_count=len(comm["chunk_ids"]),
+                report_embedding=comm.get("report_embedding"),
+                chunk_ids=comm["chunk_ids"],
+            )
+    return len(communities)
+
+
+async def community_vectors(driver: AsyncDriver) -> list[dict[str, Any]]:
+    """Communities that carry a report embedding, for ranked global search."""
+    async with driver.session() as session:
+        result = await session.run(
+            """
+            MATCH (comm:Community) WHERE comm.report_embedding IS NOT NULL
+            RETURN comm.id AS id, comm.title AS title, comm.summary AS summary,
+                   coalesce(comm.keywords, []) AS keywords,
+                   comm.member_count AS member_count,
+                   comm.report_embedding AS report_embedding
+            """
+        )
+        return [dict(record) async for record in result]
+
+
+async def list_communities(driver: AsyncDriver) -> list[dict[str, Any]]:
+    async with driver.session() as session:
+        result = await session.run(
+            """
+            MATCH (comm:Community)
+            RETURN comm.id AS id, comm.title AS title, comm.summary AS summary,
+                   coalesce(comm.keywords, []) AS keywords,
+                   comm.member_count AS member_count
+            ORDER BY comm.member_count DESC
+            """
+        )
+        return [dict(record) async for record in result]
 
 
 async def fetch_context(

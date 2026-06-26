@@ -61,3 +61,58 @@ async def test_empty_input_makes_no_request(monkeypatch):
     client = FakeClient()
     assert await emb_mod.embed_texts(client, []) == []
     assert client.batches == []
+
+
+class FakeSparseClient:
+    """Returns BGE-M3-style lexical weights, items in reverse to test reorder."""
+
+    def __init__(self, payload=None, raises=None):
+        self.calls: list[dict] = []
+        self._raises = raises
+        self._payload = payload
+
+    async def post(self, url, json=None, headers=None, timeout=None):
+        self.calls.append({"url": url, "json": json, "headers": headers})
+        if self._raises is not None:
+            raise self._raises
+        if self._payload is not None:
+            return FakeResponse(self._payload)
+        data = [
+            {"index": i, "lexical_weights": {str(i): 1.0, "99": float(len(t))}}
+            for i, t in enumerate(json["input"])
+        ]
+        return FakeResponse({"data": list(reversed(data))})
+
+
+async def test_embed_sparse_returns_weights_in_input_order(monkeypatch):
+    _patch_settings(monkeypatch, sparse_api_base="http://sparse:9000")
+    client = FakeSparseClient()
+    out = await emb_mod.embed_sparse_texts(client, ["a", "bbb"])
+    assert out == [{"0": 1.0, "99": 1.0}, {"1": 1.0, "99": 3.0}]
+    assert client.calls[0]["url"].endswith("/embed_sparse")
+
+
+async def test_embed_sparse_without_endpoint_returns_none(monkeypatch):
+    _patch_settings(monkeypatch, sparse_api_base="")
+    client = FakeSparseClient()
+    assert await emb_mod.embed_sparse_texts(client, ["a"]) is None
+    assert client.calls == []  # no request attempted
+
+
+async def test_embed_sparse_degrades_to_none_on_failure(monkeypatch):
+    _patch_settings(monkeypatch, sparse_api_base="http://sparse:9000")
+    client = FakeSparseClient(raises=RuntimeError("endpoint down"))
+    assert await emb_mod.embed_sparse_texts(client, ["a"]) is None
+
+
+async def test_embed_sparse_empty_input_makes_no_request(monkeypatch):
+    _patch_settings(monkeypatch, sparse_api_base="http://sparse:9000")
+    client = FakeSparseClient()
+    assert await emb_mod.embed_sparse_texts(client, []) == []
+    assert client.calls == []
+
+
+async def test_embed_sparse_single_text_helper(monkeypatch):
+    _patch_settings(monkeypatch, sparse_api_base="http://sparse:9000")
+    client = FakeSparseClient()
+    assert await emb_mod.embed_sparse_text(client, "a") == {"0": 1.0, "99": 1.0}

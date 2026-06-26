@@ -1,5 +1,4 @@
-import pytest
-
+from app import graph
 from app import ingest as ingest_mod
 from app.channels import (
     VectorChannel,
@@ -8,6 +7,7 @@ from app.channels import (
 )
 from app.config import Settings
 from app.llm import ExtractionResult
+from app.store_neo4j import Neo4jStore
 
 
 def test_default_channels_match_legacy_shape():
@@ -20,6 +20,17 @@ def test_default_channels_match_legacy_shape():
     # legacy per-channel weight env overrides still flow through
     reweighted = resolve_vector_channels(Settings(summary_channel_weight=0.5))
     assert reweighted[1].weight == 0.5
+
+
+def test_channel_enable_flags_drop_channels():
+    # disabling both leaves only the canonical content channel (1 embedding/chunk)
+    only_content = resolve_vector_channels(
+        Settings(summary_channel_enabled=False, keywords_channel_enabled=False)
+    )
+    assert [c.name for c in only_content] == ["content"]
+    # disabling just keywords keeps content + summary
+    no_kw = resolve_vector_channels(Settings(keywords_channel_enabled=False))
+    assert [c.name for c in no_kw] == ["content", "summary"]
 
 
 def test_explicit_channel_override_is_used_verbatim():
@@ -86,10 +97,12 @@ async def test_ingest_builds_embeddings_map_per_channel(monkeypatch):
     async def fake_save(driver, doc_id, title, sources, chunk_rows):
         captured["rows"] = chunk_rows
 
-    monkeypatch.setattr(ingest_mod.graph, "get_document", fake_get)
-    monkeypatch.setattr(ingest_mod.graph, "save_document", fake_save)
+    monkeypatch.setattr(graph, "get_document", fake_get)
+    monkeypatch.setattr(graph, "save_document", fake_save)
 
-    await ingest_mod.ingest_document(None, None, "hello", title="t", source="src")
+    await ingest_mod.ingest_document(
+        Neo4jStore(None), None, "hello", title="t", source="src"
+    )
 
     row = captured["rows"][0]
     # one embedding entry per channel, keyed by the channel's embedding_prop
