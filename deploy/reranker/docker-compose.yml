@@ -1,0 +1,37 @@
+# Optional overlay: run the Qwen3-Reranker sidecar and point engram's API at it
+# for the measured +3.15 / +3.84 nDCG@10 reranker upgrade (bench/RESULTS.md §1e).
+# Compose it on top of the root stack (same `engram` project):
+#
+#   docker compose -f docker-compose.yml -f deploy/reranker/docker-compose.yml up --build
+name: engram
+
+services:
+  reranker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: engram-reranker
+    environment:
+      MODEL_NAME: Qwen/Qwen3-Reranker-0.6B   # 4B is stronger; needs a GPU
+      USE_FP16: "false"                       # CPU image; set true on a GPU base
+    ports:
+      - "8091:8091"
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8091/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  api:
+    environment:
+      RERANKER_API_BASE: http://reranker:8091
+      RERANKER_MODEL: Qwen/Qwen3-Reranker-0.6B
+      RERANKER_FORMAT: tei
+    depends_on:
+      reranker:
+        condition: service_healthy
+
+volumes:
+  hf_cache:

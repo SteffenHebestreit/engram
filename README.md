@@ -531,7 +531,8 @@ combination we tried (see [RESULTS.md](bench/RESULTS.md)).
   over `dense+rerank` *grows* to **+2.15 / +4.0** — engram's fusion+graph feed a
   better candidate pool that a strong reranker exploits. The reranker is the one
   stage nothing washes out, so it's the highest-leverage knob — and engram is the
-  bigger winner for using it.
+  bigger winner for using it. **Ship it with [`deploy/reranker`](deploy/reranker)**
+  (a sidecar that serves Qwen3-Reranker in engram's reranker format).
 - **A stronger *embedder* barely moves the result** (Qwen3-Embedding is +4.4
   dense yet ≈tied at engram's pipeline) — the reranker caps it. So **BGE-M3 stays
   the robust default**; chase the reranker, not the embedder.
