@@ -17,6 +17,8 @@ from .models import (
     EntityUpsertRequest,
     EvalRequest,
     EvalResponse,
+    FeedbackRequest,
+    FeedbackResponse,
     GraphWriteResponse,
     IngestRequest,
     IngestResponse,
@@ -206,6 +208,18 @@ async def eval_endpoint(req: EvalRequest):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return EvalResponse(**report)
+
+
+@app.post("/feedback", response_model=FeedbackResponse)
+async def feedback_endpoint(req: FeedbackRequest):
+    """Record which chunks an agent actually grounded its answer on (implicit-
+    relevance feedback). engram persists the (query → used-chunk) positives so an
+    offline job can mine hard negatives + tune fusion weights — the agent-in-the-
+    loop learning signal a stateless retriever can't capture. See app/store.py."""
+    recorded = await app.state.store.record_feedback(
+        req.query, req.used_chunk_ids, req.query_id
+    )
+    return FeedbackResponse(recorded=recorded)
 
 
 @app.get("/chunks/{chunk_id}/context", response_model=ChunkContextResponse)

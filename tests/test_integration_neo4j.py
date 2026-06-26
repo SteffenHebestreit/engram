@@ -170,6 +170,12 @@ async def test_ingest_and_search_end_to_end(monkeypatch):
         excluded = await store.nearest_chunks(c0_emb, 3, 0.9, exclude_doc_id=doc_id)
         assert all(n["doc_id"] != doc_id for n in excluded)  # this doc is excluded
 
+        # feedback capture: only existing chunks get linked to the Feedback node
+        n = await store.record_feedback(
+            "what is topic zero?", [chunk_ids[0], chunk_ids[1], "missing:9"]
+        )
+        assert n == 2
+
         # incremental-reuse read path returns chunks with their stored vectors
         cached = await store.fetch_document_chunks(doc_id, ["content_embedding"])
         assert len(cached) == 3

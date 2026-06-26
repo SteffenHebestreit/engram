@@ -78,6 +78,24 @@ async def test_proxy_search_themes(monkeypatch):
     assert body == {"query": "themes?", "top_k": 3}
 
 
+async def test_proxy_mark_used_posts_feedback(monkeypatch):
+    record = []
+    _patch_client(monkeypatch, {"recorded": 2}, record)
+    out = await mcp_server.proxy_mark_used("q", ["a", "b"], query_id="qid")
+    assert out == {"recorded": 2}
+    method, url, body = record[0]
+    assert method == "POST"
+    assert url.endswith("/feedback")
+    assert body == {"query": "q", "used_chunk_ids": ["a", "b"], "query_id": "qid"}
+
+
+async def test_proxy_mark_used_omits_query_id(monkeypatch):
+    record = []
+    _patch_client(monkeypatch, {"recorded": 1}, record)
+    await mcp_server.proxy_mark_used("q", ["a"])
+    assert record[0][2] == {"query": "q", "used_chunk_ids": ["a"]}  # no query_id key
+
+
 def test_build_server_registers_tools():
     pytest.importorskip("mcp")  # only when the optional MCP dep is installed
     server = mcp_server.build_server()

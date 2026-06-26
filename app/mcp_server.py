@@ -67,6 +67,18 @@ async def proxy_search_themes(query: str, top_k: int = 5) -> list[dict]:
         return resp.json()
 
 
+async def proxy_mark_used(
+    query: str, used_chunk_ids: list[str], query_id: str | None = None
+) -> dict:
+    body: dict = {"query": query, "used_chunk_ids": used_chunk_ids}
+    if query_id:
+        body["query_id"] = query_id
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        resp = await client.post(f"{ENGRAM_API_BASE}/feedback", json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+
 def build_server():
     """Construct the FastMCP server (imports `mcp`; install requirements-mcp.txt)."""
     from mcp.server.fastmcp import FastMCP
@@ -104,6 +116,16 @@ def build_server():
         and return the top theme summaries (requires the community layer to have
         been built)."""
         return await proxy_search_themes(query, top_k)
+
+    @server.tool()
+    async def mark_used(
+        query: str, used_chunk_ids: list[str], query_id: str | None = None
+    ) -> dict:
+        """Report which chunk ids you actually grounded your answer on for a query
+        (implicit-relevance feedback). Call this after answering, with the
+        chunk_ids from `search` results you actually used. engram records the
+        positives to learn which retrievals matter — improving future ranking."""
+        return await proxy_mark_used(query, used_chunk_ids, query_id)
 
     return server
 

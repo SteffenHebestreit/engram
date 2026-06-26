@@ -181,6 +181,18 @@ class PgvectorStore:
                 )
                 """
             )
+            # implicit-relevance feedback: chunks an agent grounded answers on
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS feedback (
+                    id BIGSERIAL PRIMARY KEY,
+                    query TEXT,
+                    query_id TEXT,
+                    chunk_id TEXT NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """
+            )
             # one vector column + HNSW (cosine) index per active channel
             for ch in channels:
                 col = _safe_column(ch.embedding_prop)
@@ -433,6 +445,26 @@ class PgvectorStore:
             for r in rows
             if r["sparse_weights"]
         }
+
+    async def record_feedback(
+        self, query: str, used_chunk_ids: list[str], query_id: str | None = None
+    ) -> int:
+        if not used_chunk_ids:
+            return 0
+        async with self._pool.connection() as conn:
+            async with conn.cursor() as cur:
+                # only chunks that exist (parity with the neo4j MATCH)
+                await cur.execute(
+                    "SELECT id FROM chunks WHERE id = ANY(%s)", (used_chunk_ids,)
+                )
+                existing = [r[0] for r in await cur.fetchall()]
+                if existing:
+                    await cur.executemany(
+                        "INSERT INTO feedback (query, query_id, chunk_id) "
+                        "VALUES (%s, %s, %s)",
+                        [(query, query_id, cid) for cid in existing],
+                    )
+        return len(existing)
 
     async def get_near_dup_links(self, chunk_ids: list[str]) -> dict[str, str]:
         from psycopg.rows import dict_row
