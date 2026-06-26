@@ -455,6 +455,7 @@ a default that reproduces the pipeline above, so nothing moves until you opt in.
 | **Fusion** | RRF, weighted-max, learned combination | register on `FUSIONS`, set `FUSION_STRATEGY` |
 | **Expander** | typed-relation / entity-centric graph walks | register on `EXPANDERS`, set `EXPANDER_STRATEGY` |
 | **Proximity** | `ppr` / `decay` (built in) or your own | register on `PROXIMITIES`, set `GRAPH_PROXIMITY_MODE` |
+| **Router** | auto-pick a preset per query (`heuristic` built in), or off | register on `ROUTERS`, set `ROUTER_STRATEGY` |
 | **Reranker** | a different cross-encoder/provider, the cheap `colbert` late-interaction option, or off | register on `RERANKERS`, set `RERANKER_STRATEGY` / `RERANKER_ENABLED` |
 | **Graph profile** | project domain entity nodes/relations into PageRank | `GRAPH_PROFILE` JSON |
 | **Store backend** | Neo4j (default) or PostgreSQL + pgvector | register on `STORES`, set `STORE_BACKEND` |

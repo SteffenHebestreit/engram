@@ -190,6 +190,14 @@ class Settings(BaseSettings):
     fusion_strategy: str = "dbsf_convex"
     expander_strategy: str = "sequence_keyword"
 
+    # adaptive query routing (see app/routing.py): a registered router classifies
+    # each query and auto-selects a preset (pipeline shape) so callers — e.g. an
+    # agent hitting /search — don't tune every request, and simple queries don't
+    # pay for the heavy pipeline. "" = off (use search_preset as before);
+    # "heuristic" = the no-LLM built-in classifier. A request that names its own
+    # preset/tuning always overrides the router.
+    router_strategy: str = ""
+
     # graph schema profile driving the GDS projection (see app/profiles.py) as
     # JSON; None = the built-in document profile (Chunk/Keyword over
     # NEXT_CHUNK/HAS_KEYWORD). Extend it to project domain entity nodes/
