@@ -191,16 +191,18 @@ class EngramDBStore:
                 "tenants": np.asarray([t for _, _, t in rows], dtype=object),
             }
             if self._quant == "b1":
-                # binary quantization (1 bit/dim → 32× smaller than f32): a packed-
-                # bit **hamming shortlist** then an **exact-cosine rescore** of that
-                # shortlist (2-stage), so the final ranking is full-precision — the
-                # binary stage only has to keep the right docs in a generous
-                # shortlist, not order them. The f32 matrix is retained here for the
-                # rescore; in production it lives on disk (mmap) so only the bits
-                # (the 32× win) sit in RAM. usearch's own quantizers don't do this
-                # rescore, so we keep b1 on a self-contained code path.
+                # binary quantization (1 bit/dim → the cache holds vectors 32×
+                # smaller than f32): a packed-bit **hamming shortlist** then an
+                # **exact-cosine rescore** of that shortlist (2-stage), so the final
+                # ranking is full-precision — the binary stage only has to keep the
+                # right docs in a generous shortlist, not order them. The rescore
+                # reads the f32 vectors from the chunk store (no duplicate matrix
+                # in the cache). The full 32× *RAM* win additionally needs those
+                # chunk embeddings out of core (the on-disk/mmap segment format);
+                # in this in-memory prototype they stay resident for MMR/dedup.
+                # usearch's own quantizers don't do this rescore, so b1 is a
+                # self-contained code path.
                 entry["codes"] = np.packbits(mat > 0, axis=1)
-                entry["mat"] = mat
             elif _USEARCH:
                 # dtype quantizes the stored vectors (f16/i8) for memory; the
                 # query stays f32 and usearch de-quantizes for scoring
@@ -241,8 +243,15 @@ class EngramDBStore:
                 if shortlist < n
                 else np.arange(n)
             )
-            mat = entry["mat"]
-            cscore = mat[cand] @ q  # exact cosine on the shortlist (rescore)
+            # rescore the shortlist with exact cosine, reading the f32 vectors from
+            # the chunk store (the cache keeps only the bits, not a second matrix)
+            cmat = np.asarray(
+                [self._chunks[ids[int(i)]]["embeddings"][prop] for i in cand],
+                dtype=np.float32,
+            )
+            cnorm = np.linalg.norm(cmat, axis=1, keepdims=True)
+            cnorm[cnorm == 0] = 1.0
+            cscore = (cmat / cnorm) @ q  # exact cosine on the shortlist (rescore)
             out = []
             for si in np.argsort(-cscore):
                 i = int(cand[si])

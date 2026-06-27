@@ -407,9 +407,11 @@ speed win does not cost quality.
   is too coarse to *rank* directly, so engramdb takes a `k`×16 **hamming shortlist**
   then **rescores it with exact cosine** (2-stage) — the binary stage only has to
   keep the right docs in a generous shortlist, the rescore restores precision. The
-  f32 rescore vectors are kept in RAM here; in production they live on disk (mmap)
-  so only the bits (the 32× win) sit in memory. On bge-m3 + bge-reranker-v2-m3,
-  SciFact, **b1 ties full precision to 3 decimals**:
+  vector cache holds only the bits (32× smaller than f32); the rescore reads the
+  ~80 shortlisted f32 vectors from the chunk store. The full 32× *RAM* win
+  additionally needs those chunk embeddings out of core (the on-disk/mmap segment
+  format, below); in this in-memory prototype they stay resident for MMR/dedup. On
+  bge-m3 + bge-reranker-v2-m3, SciFact, **b1 ties full precision to 3 decimals**:
 
   | engramdb (bge-m3, SciFact) | nDCG@10 | Recall@10 | MAP | P@10 |
   |---|---|---|---|---|
