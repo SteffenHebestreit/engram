@@ -191,8 +191,11 @@ Cost and caveats:
   as with the feature off — ingest never breaks.
 - Changes the stored content vectors, so it is part of the **schema signature**:
   enable it on a fresh store (or wipe + re-ingest), or the guard will stop you.
-- Embeddings-only today; contextual BM25 (folding the context into the fulltext
-  index too) is a planned follow-up.
+- **Contextual BM25 too:** the context is also stored and indexed for fulltext
+  (Neo4j: indexed alongside `text`/`summary`; pgvector: a separate `context_tsv`),
+  so the lexical channel benefits as well — Anthropic's larger reported gain. This
+  part is additive and unconditional (the context is empty when the feature is
+  off, so a non-contextual store's fulltext results are unchanged).
 
 ---
 

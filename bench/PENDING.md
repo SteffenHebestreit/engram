@@ -99,11 +99,15 @@ where the same phrasing recurs across documents:
 #   stores, then POST /eval the same golden set against each.
 ```
 
+Both halves ship: **contextual embeddings** (context prepended before embedding)
+and **contextual BM25** (the context is also indexed for fulltext — Neo4j indexes
+`c.context`; pgvector adds a `context_tsv` generated column). So the A/B can also
+isolate the two — embeddings-only vs +BM25 — to attribute the lift per channel.
+
 **Decision rule:** report the nDCG@10 / recall@10 delta from engram's own
 `/eval` (judge-free) — claim a win only if it clears the baseline beyond the
-bootstrap CI. Then build **contextual BM25** (fold the context into the fulltext
-index) for the bigger reported jump. Until measured on such a corpus it ships as
-an opt-in feature with the citation, not a claimed number.
+bootstrap CI. Until measured on such a corpus it ships as an opt-in feature with
+the citation, not a claimed number.
 
 ## Also worth doing on the bigger box
 

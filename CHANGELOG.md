@@ -15,7 +15,10 @@ Feature branches built and tested, awaiting merge:
   and complementary to `NEXT_CHUNK` expansion (doc identity baked in at index time
   vs. neighbour context at read time). Degrades to the bare chunk when the LLM is
   down; part of the schema signature. Wired through the existing `CHANNEL_SOURCES`
-  seam (search untouched). Branch `contextual-retrieval`.
+  seam. Includes **contextual BM25**: the context is also indexed for fulltext
+  (Neo4j: alongside text/summary; pgvector: a separate `context_tsv` generated
+  column) so the lexical channel benefits too — Anthropic's larger reported gain —
+  additively (empty when off → unchanged behaviour). Branch `contextual-retrieval`.
 
 - **Reranker sidecar** (`deploy/reranker`) — serves Qwen3-Reranker in engram's
   reranker wire format, since TEI can't serve its causal-LM format. The measured

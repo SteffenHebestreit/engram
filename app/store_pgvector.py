@@ -173,6 +173,18 @@ class PgvectorStore:
             await conn.execute(
                 "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS near_dup_of TEXT"
             )
+            # Contextual Retrieval: the doc-situating context, plus a separate
+            # generated tsvector for contextual BM25. Additive (a generated column
+            # can be ADDed and back-computes for existing rows), so non-contextual
+            # stores keep an empty context_tsv that never matches — zero change.
+            await conn.execute(
+                "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS context TEXT"
+            )
+            await conn.execute(
+                "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS context_tsv tsvector "
+                "GENERATED ALWAYS AS (to_tsvector('english', coalesce(context, ''))) "
+                "STORED"
+            )
             await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS chunk_keywords (
@@ -193,6 +205,10 @@ class PgvectorStore:
                 )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS chunks_tsv_idx ON chunks USING gin (tsv)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS chunks_context_tsv_idx "
+                "ON chunks USING gin (context_tsv)"
             )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS chunks_doc_seq_idx ON chunks (doc_id, seq)"
@@ -223,7 +239,7 @@ class PgvectorStore:
         emb_cols = [_safe_column(ch.embedding_prop) for ch in channels]
         cols = [
             "id", "doc_id", "seq", "text", "summary", "keywords",
-            "sparse_weights", "near_dup_of", *emb_cols,
+            "sparse_weights", "near_dup_of", "context", *emb_cols,
         ]
         placeholders = ", ".join(["%s"] * len(cols))
         col_list = ", ".join(cols)
@@ -256,6 +272,7 @@ class PgvectorStore:
                     ch["keywords"],
                     Jsonb(sparse) if sparse else None,
                     ch.get("near_dup_of"),
+                    ch.get("context"),
                 ]
                 for col, channel in zip(emb_cols, channels):
                     vec = embeddings[channel.embedding_prop]
@@ -506,11 +523,16 @@ class PgvectorStore:
             return []
         async with self._pool.connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
+                # Contextual BM25: the doc-situating context is its own generated
+                # tsvector (context_tsv), matched + scored alongside the text/
+                # summary tsv. Empty for non-contextual chunks, so a store without
+                # Contextual Retrieval behaves exactly as before.
                 await cur.execute(
                     f"""
-                    SELECT {_CHUNK_COLS}, ts_rank(tsv, q) AS score
+                    SELECT {_CHUNK_COLS},
+                           ts_rank(tsv, q) + ts_rank(context_tsv, q) AS score
                     FROM chunks, plainto_tsquery('english', %s) q
-                    WHERE tsv @@ q
+                    WHERE tsv @@ q OR context_tsv @@ q
                     ORDER BY score DESC LIMIT %s
                     """,
                     (query, k),

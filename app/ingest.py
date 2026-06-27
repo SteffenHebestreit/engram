@@ -198,6 +198,10 @@ async def ingest_document(
             },
             "sparse_weights": sparse_by_seq[seq],
             "near_dup_of": near_dup_by_seq[seq],
+            # Contextual Retrieval: the doc-situating context (empty unless the
+            # feature is on) is stored so it can be indexed for contextual BM25,
+            # in addition to being prepended to the content embedding above.
+            "context": metadata[seq].context,
         }
         for seq in range(len(chunks))
     ]

@@ -148,9 +148,13 @@ async def init_schema(driver: AsyncDriver) -> None:
                 }}}}
                 """
             )
+        # Contextual BM25: index the doc-situating context alongside text +
+        # summary, so the lexical channel also benefits from Contextual Retrieval.
+        # c.context is null for non-contextual chunks, so results are identical
+        # when the feature is off (no schema-signature change).
         await session.run(
             f"CREATE FULLTEXT INDEX {FULLTEXT_INDEX} IF NOT EXISTS "
-            "FOR (c:Chunk) ON EACH [c.text, c.summary]"
+            "FOR (c:Chunk) ON EACH [c.text, c.summary, c.context]"
         )
 
     # record the signature these indexes were built against (first run adopts;
@@ -217,7 +221,8 @@ async def save_document(
                 c.summary = row.summary,
                 c.keywords = row.keywords,
                 c.sparse_weights = row.sparse_json,
-                c.near_dup_of = row.near_dup_of
+                c.near_dup_of = row.near_dup_of,
+                c.context = row.context
             SET c += row.embeddings
             MERGE (c)-[:PART_OF]->(d)
             WITH c, row
