@@ -52,6 +52,31 @@ def score_system(runs, questions):
     }
 
 
+def paired_recall(runs_a, runs_b, questions, k=5, seed=0):
+    """Paired engram-vs-baseline on per-question Recall@k: mean delta + bootstrap
+    95% CI + win/tie/loss + two-sided sign-test p (so a multi-hop 'lift' is tested,
+    not just eyeballed — same rigor as the BEIR harness)."""
+    import math as _m
+
+    def ranked(runs, qid):
+        return sorted(runs[qid], key=runs[qid].get, reverse=True)
+
+    deltas = [
+        recall_at_k(ranked(runs_a, qid), g, k) - recall_at_k(ranked(runs_b, qid), g, k)
+        for qid, _, g in questions
+    ]
+    wins = sum(1 for d in deltas if d > 1e-9)
+    losses = sum(1 for d in deltas if d < -1e-9)
+    nd = wins + losses
+    p = 1.0 if nd == 0 else _m.erfc((abs(wins - losses) / _m.sqrt(nd)) / _m.sqrt(2))
+    arr = np.asarray(deltas, dtype=np.float64)
+    rng = np.random.default_rng(seed)
+    boot = arr[rng.integers(0, len(arr), size=(1000, len(arr)))].mean(axis=1)
+    return {"mean": float(arr.mean()), "lo": float(np.percentile(boot, 2.5)),
+            "hi": float(np.percentile(boot, 97.5)), "wins": wins,
+            "ties": len(deltas) - wins - losses, "losses": losses, "p": p}
+
+
 async def main():
     from datasets import load_dataset
     from sentence_transformers import CrossEncoder, SentenceTransformer
@@ -95,6 +120,15 @@ async def main():
     embedder = SentenceTransformer(embed_model)
     embedder.max_seq_length = 512  # cap (BGE-M3 defaults to 8192 — far too slow on CPU)
     reranker = CrossEncoder(rerank_model, max_length=512)
+    print(
+        "CONFIG "
+        f"backend={os.environ.get('STORE_BACKEND','neo4j')} embed={embed_model} "
+        f"rerank={rerank_model} embedding_dim={os.environ.get('EMBEDDING_DIM','(default)')} "
+        f"quant={os.environ.get('ENGRAMDB_QUANTIZATION','(default)')} "
+        f"graph_proximity={os.environ.get('GRAPH_PROXIMITY_MODE','(default)')} "
+        f"rerank_depth={RERANK_DEPTH} top_k={TOP_K} dataset={dataset} n={N}",
+        flush=True,
+    )
 
     def cross_encode(query, texts):
         return [float(s) for s in reranker.predict([(query, t) for t in texts])] if texts else []
@@ -138,6 +172,21 @@ async def main():
         cand = np.argsort(sims)[::-1][:RERANK_DEPTH]
         ce = cross_encode(q, [doc_texts[i] for i in cand])
         runs["dense+rerank"][qid] = {doc_ids[i]: sc for i, sc in zip(cand, ce)}
+
+    # ── hybrid (dense + BM25 via RRF) + rerank — isolates fusion from the graph ──
+    runs["hybrid+rerank"] = {}
+    for idx, (qid, q, _) in enumerate(questions):
+        sims = doc_matrix @ q_matrix[idx]
+        dense_rank = np.argsort(sims)[::-1][:200]
+        bm_rank = np.argsort(bm25.get_scores(tokenize(q)))[::-1][:200]
+        rrf: dict[int, float] = {}
+        for r, i in enumerate(dense_rank):
+            rrf[int(i)] = rrf.get(int(i), 0.0) + 1.0 / (60 + r)
+        for r, i in enumerate(bm_rank):
+            rrf[int(i)] = rrf.get(int(i), 0.0) + 1.0 / (60 + r)
+        cand = sorted(rrf, key=rrf.get, reverse=True)[:RERANK_DEPTH]
+        ce = cross_encode(q, [doc_texts[i] for i in cand])
+        runs["hybrid+rerank"][qid] = {doc_ids[i]: sc for i, sc in zip(cand, ce)}
     print("baselines done", flush=True)
 
     # ── engram (full graph pipeline) ──
@@ -205,13 +254,27 @@ async def main():
     await store.close()
 
     # ── report ──
-    systems = ["bm25", "dense", "dense+rerank", "engram"]
+    systems = ["bm25", "dense", "dense+rerank", "hybrid+rerank", "engram"]
+    systems = [s for s in systems if s in runs]
     metrics = ["Recall@2", "Recall@5", "Recall@10"]
     scores = {sys: score_system(runs[sys], questions) for sys in systems}
-    print(f"\n=== HotpotQA multi-hop retrieval ({embed_model} + {rerank_model}) ===")
-    print(f"{'system':<14}" + "".join(f"{m:>12}" for m in metrics))
+    print(f"\n=== {dataset} multi-hop retrieval ({embed_model} + {rerank_model}, n={len(questions)}) ===")
+    print(f"{'system':<16}" + "".join(f"{m:>12}" for m in metrics))
     for sys in systems:
-        print(f"{sys:<14}" + "".join(f"{scores[sys][m]:>12.4f}" for m in metrics))
+        print(f"{sys:<16}" + "".join(f"{scores[sys][m]:>12.4f}" for m in metrics))
+    # paired significance: does engram's GRAPH pipeline beat the rerank baselines on
+    # multi-hop Recall@5? This is the decisive test of whether the architecture adds
+    # measurable quality where single-hop BEIR cannot exercise it.
+    for base in ("dense+rerank", "hybrid+rerank"):
+        if "engram" in runs and base in runs:
+            d = paired_recall(runs["engram"], runs[base], questions, k=5)
+            sig = "n.s." if d["lo"] <= 0 <= d["hi"] else "SIGNIFICANT"
+            print(
+                f"  paired engram−{base}: ΔRecall@5={d['mean']:+.4f} "
+                f"95%CI[{d['lo']:+.4f},{d['hi']:+.4f}] "
+                f"win/tie/loss={d['wins']}/{d['ties']}/{d['losses']} "
+                f"sign-p={d['p']:.4f} ({sig})"
+            )
 
 
 if __name__ == "__main__":

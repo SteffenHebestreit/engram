@@ -99,6 +99,14 @@ def average_precision(ranked, qrel):
     return total / len(rel)
 
 
+def per_query_ndcg(runs, qrels, qids):
+    """Per-query nDCG@10 list (for bootstrap CIs + paired significance tests)."""
+    def ranked(q):
+        return sorted(runs[q], key=runs[q].get, reverse=True)
+
+    return [ndcg_at_k(ranked(q), qrels[q], 10) for q in qids]
+
+
 def score_system(runs, qrels, qids):
     def avg(fn):
         return sum(fn(q) for q in qids) / len(qids)
@@ -109,9 +117,44 @@ def score_system(runs, qrels, qids):
     return {
         "nDCG@10": avg(lambda q: ndcg_at_k(ranked(q), qrels[q], 10)),
         "Recall@10": avg(lambda q: recall_at_k(ranked(q), qrels[q], 10)),
+        # Recall@100 is the metric most sensitive to ANN recall (usearch vs HNSW),
+        # so it surfaces real backend differences the @10 metrics smooth away.
+        "Recall@100": avg(lambda q: recall_at_k(ranked(q), qrels[q], 100)),
         "MAP": avg(lambda q: average_precision(ranked(q), qrels[q])),
         "P@10": avg(lambda q: precision_at_k(ranked(q), qrels[q], 10)),
     }
+
+
+def paired_delta(runs_a, runs_b, qrels, qids, seed=0):
+    """Paired engram-vs-baseline comparison on per-query nDCG@10: mean delta with
+    a bootstrap CI, plus win/tie/loss counts and a two-sided sign-test p-value.
+    A 'tie' is only honest when the delta CI straddles 0 / the sign test is n.s."""
+    import math as _m
+
+    def ranked(runs, q):
+        return sorted(runs[q], key=runs[q].get, reverse=True)
+
+    deltas = [
+        ndcg_at_k(ranked(runs_a, q), qrels[q], 10) - ndcg_at_k(ranked(runs_b, q), qrels[q], 10)
+        for q in qids
+    ]
+    wins = sum(1 for d in deltas if d > 1e-9)
+    losses = sum(1 for d in deltas if d < -1e-9)
+    ties = len(deltas) - wins - losses
+    # exact two-sided sign test over decisive (non-tie) queries, normal-approx
+    nd = wins + losses
+    if nd == 0:
+        p = 1.0
+    else:
+        z = abs(wins - losses) / _m.sqrt(nd)
+        p = _m.erfc(z / _m.sqrt(2))  # two-sided normal approximation
+    arr = np.asarray(deltas, dtype=np.float64)
+    mean = float(arr.mean())
+    rng = np.random.default_rng(seed)
+    boot = arr[rng.integers(0, len(arr), size=(1000, len(arr)))].mean(axis=1)
+    lo, hi = float(np.percentile(boot, 2.5)), float(np.percentile(boot, 97.5))
+    return {"mean": mean, "lo": lo, "hi": hi, "wins": wins, "ties": ties,
+            "losses": losses, "p": p}
 
 
 def tokenize(text: str) -> list[str]:
@@ -137,6 +180,21 @@ async def main():
     # the auto-prompt so engram's E1 prepending is the single instruction source.
     embedder.default_prompt_name = None
     reranker = CrossEncoder(rerank_model, max_length=512)
+
+    # print the full effective config so a result log is reproducible from itself
+    # (quant + embedding_dim + proximity mode are runtime overrides, not committed)
+    def _env(k, d="(default)"):
+        return os.environ.get(k, d)
+    print(
+        "CONFIG "
+        f"backend={_env('STORE_BACKEND','neo4j')} embed={embed_model} "
+        f"rerank={rerank_model} embedding_dim={_env('EMBEDDING_DIM')} "
+        f"quant={_env('ENGRAMDB_QUANTIZATION')} graph_proximity={_env('GRAPH_PROXIMITY_MODE')} "
+        f"rerank_depth={RERANK_DEPTH} top_k={TOP_K} rerank_top_k={_env('RERANK_TOP_K')} "
+        f"mmr_lambda={_env('MMR_LAMBDA')} hyde={_env('HYDE_ENABLED')} "
+        f"sparse={'on' if os.environ.get('BENCH_SPARSE')=='1' else 'off'}",
+        flush=True,
+    )
 
     def encode(texts, cache=False):
         embs = embedder.encode(
@@ -173,7 +231,7 @@ async def main():
     import app.ingest as ingest_mod
     import app.search as search_mod
     from app.config import get_settings
-    from app.eval import attribute_channels
+    from app.eval import attribute_channels, bootstrap_ci
     from app.ingest import ingest_document
     from app.rerank import RERANKERS
     from app.search import search
@@ -216,6 +274,7 @@ async def main():
     await store.init_schema()
 
     summary: dict[str, dict[str, dict]] = {}
+    raw_runs: dict[str, tuple] = {}  # name -> (runs, qrels, qids) for CIs + paired tests
     # per-channel gold-hit attribution (engram's eval harness) per dataset
     attributions: dict[str, dict[str, dict]] = {}
 
@@ -271,6 +330,27 @@ async def main():
             ce = cross_encode(queries[q], [doc_texts[i] for i in cand])
             runs["dense+rerank"][q] = {doc_ids[i]: s for i, s in zip(cand, ce)}
         print(f"  dense+rerank in {time.perf_counter() - tb:.0f}s", flush=True)
+
+        # ── hybrid (dense + BM25 via RRF) + rerank — the honest 2026 control ──
+        # Isolates engram's *fusion* from its median/MMR/graph stages: if engram
+        # ties this, its single-hop lift over dense+rerank is the hybrid fusion,
+        # not the graph machinery (which BEIR single-chunk docs don't exercise).
+        tb = time.perf_counter()
+        runs["hybrid+rerank"] = {}
+        for q in qids:
+            sims = doc_matrix @ query_emb[q]
+            dense_rank = np.argsort(sims)[::-1][:200]
+            bm = bm25_model.get_scores(tokenize(queries[q]))
+            bm_rank = np.argsort(bm)[::-1][:200]
+            rrf: dict[int, float] = {}
+            for r, i in enumerate(dense_rank):
+                rrf[int(i)] = rrf.get(int(i), 0.0) + 1.0 / (60 + r)
+            for r, i in enumerate(bm_rank):
+                rrf[int(i)] = rrf.get(int(i), 0.0) + 1.0 / (60 + r)
+            cand = sorted(rrf, key=rrf.get, reverse=True)[:RERANK_DEPTH]
+            ce = cross_encode(queries[q], [doc_texts[i] for i in cand])
+            runs["hybrid+rerank"][q] = {doc_ids[i]: s for i, s in zip(cand, ce)}
+        print(f"  hybrid+rerank in {time.perf_counter() - tb:.0f}s", flush=True)
         print("baselines done", flush=True)
 
         # ── engram (full pipeline) ──
@@ -337,20 +417,37 @@ async def main():
             settings.sparse_enabled = False
 
         summary[name] = {sys: score_system(r, qrels, qids) for sys, r in runs.items()}
+        raw_runs[name] = (dict(runs), qrels, qids)
 
     await store.close()
 
     # ── report ──
-    systems = ["bm25", "dense", "dense+rerank", "engram"]
+    systems = ["bm25", "dense", "dense+rerank", "hybrid+rerank", "engram"]
     if bench_sparse:
         systems.append("engram+sparse")
-    metrics = ["nDCG@10", "Recall@10", "MAP", "P@10"]
+    systems = [s for s in systems if s in summary[DATASETS[0]]]
+    metrics = ["nDCG@10", "Recall@10", "Recall@100", "MAP", "P@10"]
     for name in DATASETS:
-        print(f"\n=== {name} ({embed_model} + {rerank_model}) ===")
-        print(f"{'system':<14}" + "".join(f"{m:>12}" for m in metrics))
+        runs_n, qrels_n, qids_n = raw_runs[name]
+        print(f"\n=== {name} ({embed_model} + {rerank_model}, n={len(qids_n)}) ===")
+        print(f"{'system':<16}" + "".join(f"{m:>12}" for m in metrics) + "   nDCG@10 95%CI")
         for sys in systems:
             row = summary[name][sys]
-            print(f"{sys:<14}" + "".join(f"{row[m]:>12.4f}" for m in metrics))
+            mean, lo, hi = bootstrap_ci(per_query_ndcg(runs_n[sys], qrels_n, qids_n))
+            ci = f"[{lo:.4f},{hi:.4f}]"
+            print(f"{sys:<16}" + "".join(f"{row[m]:>12.4f}" for m in metrics) + f"   {ci}")
+        # paired significance: engram vs the two rerank baselines (is the lift real?
+        # is any backend delta a tie?). Reports mean delta + 95% CI + sign-test p.
+        for base in ("dense+rerank", "hybrid+rerank"):
+            if "engram" in runs_n and base in runs_n:
+                d = paired_delta(runs_n["engram"], runs_n[base], qrels_n, qids_n)
+                sig = "n.s." if d["lo"] <= 0 <= d["hi"] else "SIGNIFICANT"
+                print(
+                    f"  paired engram−{base}: Δave_nDCG@10={d['mean']:+.4f} "
+                    f"95%CI[{d['lo']:+.4f},{d['hi']:+.4f}] "
+                    f"win/tie/loss={d['wins']}/{d['ties']}/{d['losses']} "
+                    f"sign-p={d['p']:.3f} ({sig})"
+                )
         # per-channel gold-hit attribution (which channel surfaced each gold hit,
         # and — the key line — which it recovered uniquely; engram's eval harness)
         for sys, attr in attributions.get(name, {}).items():

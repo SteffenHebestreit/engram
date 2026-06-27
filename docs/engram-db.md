@@ -38,12 +38,16 @@ store question and reshaped the Engram-DB design:
 4. **Chunking:** don't over-split coherent docs (engram's default size is good);
    NEXT_CHUNK's value is context-completeness, not doc-rank (needs a chunk-level
    metric to quantify — still open).
-5. **Engram-DB ships and keeps the quality win — now verified on the real
-   production stack.** A GPU head-to-head with `bge-m3` + `bge-reranker-v2-m3`
-   (not just the CPU MiniLM floor) shows **engramdb ties the engram-layer (Neo4j)**
-   — SciFact 0.7389 vs 0.7373, NFCorpus 0.3397 vs 0.3378 nDCG@10 — while **beating
-   standard 2-stage RAG by +1.39 / +0.73 nDCG@10**. Same quality, fastest backend.
-   See "Real production-model head-to-head" below.
+5. **Engram-DB ships and keeps the quality win — verified on the real production
+   stack with CIs + significance tests.** A GPU head-to-head with `bge-m3` +
+   `bge-reranker-v2-m3` (not just the CPU MiniLM floor) shows **engramdb ties the
+   engram-layer (Neo4j)** (SciFact 0.7389 vs 0.7373, NFCorpus 0.3377 vs 0.3378 —
+   within the run-to-run noise floor) and **beats pgvector** on SciFact (0.7232,
+   its BM25 channel underperforms). **Honest caveat (post adversarial review):** on
+   single-hop BEIR engram's lift over a strong `hybrid(dense+BM25)+rerank` baseline
+   is **not statistically significant** (the median/MMR/graph stages aren't
+   exercised there) — the architecture's retrieval value must be shown on
+   **multi-hop**, not single-hop nDCG. See "Real production-model head-to-head".
 
 Details, tables, and caveats below.
 
@@ -408,15 +412,25 @@ speed win does not cost quality.
   then **rescores it with exact cosine** (2-stage) — the binary stage only has to
   keep the right docs in a generous shortlist, the rescore restores precision. The
   vector cache holds only the bits (32× smaller than f32); the rescore reads the
-  ~80 shortlisted f32 vectors from the chunk store. The full 32× *RAM* win
-  additionally needs those chunk embeddings out of core (the on-disk/mmap segment
-  format, below); in this in-memory prototype they stay resident for MMR/dedup. On
-  bge-m3 + bge-reranker-v2-m3, SciFact, **b1 ties full precision to 3 decimals**:
+  shortlisted f32 vectors from the chunk store. The full 32× *RAM* win additionally
+  needs those chunk embeddings out of core (the on-disk/mmap segment format, below);
+  in this in-memory prototype they stay resident for MMR/dedup. On bge-m3 +
+  bge-reranker-v2-m3, SciFact, **b1 matches f32 to 3 decimals**:
 
   | engramdb (bge-m3, SciFact) | nDCG@10 | Recall@10 | MAP | P@10 |
   |---|---|---|---|---|
   | f32 | 0.7389 | 0.8529 | 0.7027 | 0.0960 |
   | **b1** (32× smaller) | **0.7390** | **0.8529** | **0.7030** | **0.0960** |
+
+  Two honest caveats (post adversarial review): (a) this is **not** strictly
+  isolated — the b1 path exact-rescores a wide `k`×16 hamming shortlist while the
+  f32 path takes usearch's approximate top-`k`, so b1's marginally-higher score
+  reflects a wider/more-exact candidate net, not binary being "better"; the right
+  reading is "b1 is not measurably worse". (b) Binary quant is **approximate** — b1
+  does not bit-exactly recover the f32 top-k; `test_b1_rescore_shortlist_is_load_bearing`
+  shows the ×16 over-fetch is load-bearing and recovers ≥85% of the *exact* brute-
+  force top-k on hard (near-orthogonal) data, the regime where 1-bit codes are
+  weakest. b1 on NFCorpus / at unbounded scale is not yet measured.
 
   So the whole quant ladder — f16 (½×) / i8 (¼×) / **b1 (1/32×)** — is quality-safe;
   b1 is the deep memory moat for very large / unbounded corpora. (Naive 1-bit
@@ -433,48 +447,75 @@ speed win does not cost quality.
 
 ### Real production-model head-to-head (bge-m3 + bge-reranker-v2-m3, RTX 4080)
 
-The quality numbers above use the local **MiniLM floor stack** (CPU). To confirm
-the win survives the **real production models**, the same head-to-head harness
-([bench/compare.py](../bench/compare.py)) was run on the GPU with engram's
-configured stack — `BAAI/bge-m3` (1024-d) embeddings + `BAAI/bge-reranker-v2-m3` —
-scoring four systems on *identical* models: `bm25`, `dense`, `dense+rerank` (the
-standard 2-stage RAG baseline), and `engram` on both the **engram-layer (Neo4j)**
-and **engramdb** backends. Rerank depth 100; full BEIR test sets; f32.
+The quality numbers above use the local **MiniLM floor stack** (CPU). The same
+harness ([bench/compare.py](../bench/compare.py)) was re-run on the GPU with
+engram's configured production stack — `BAAI/bge-m3` (1024-d) + `BAAI/bge-reranker-v2-m3`
+— now with **bootstrap 95% CIs, paired significance tests, Recall@100, and an
+honest `hybrid(dense+BM25 RRF)+rerank` baseline** (config: `quant=f32 graph=decay
+rerank_depth=100 mmr_lambda=1.0 hyde=off`, printed in every log for reproducibility).
+This section was **rewritten after an adversarial review** of an earlier, overstated
+version — the corrections are called out below.
 
-**SciFact** (300 queries, 5183 docs):
+**SciFact** (n=300), engramdb run — nDCG@10 / R@10 / R@100 / MAP / P@10 (nDCG 95%CI):
 
-| system | nDCG@10 | Recall@10 | MAP | P@10 |
-|---|---|---|---|---|
-| bm25 | 0.6519 | 0.7740 | 0.6132 | 0.0850 |
-| dense | 0.6415 | 0.7751 | 0.5990 | 0.0870 |
-| dense+rerank *(standard 2-stage)* | 0.7250 | 0.8246 | 0.6934 | 0.0933 |
-| engram · Neo4j *(engram-layer)* | 0.7373 | 0.8529 | 0.7007 | 0.0960 |
-| **engram · engramdb** | **0.7389** | **0.8529** | **0.7027** | **0.0960** |
+| system | nDCG@10 | R@10 | R@100 | MAP | P@10 |
+|---|---|---|---|---|---|
+| bm25 | 0.6519 | 0.7740 | 0.8731 | 0.6132 | 0.0850 |
+| dense | 0.6415 | 0.7751 | 0.9037 | 0.5990 | 0.0870 |
+| dense+rerank *(naive 2-stage)* | 0.7250 | 0.8246 | 0.9037 | 0.6934 | 0.0933 |
+| **hybrid+rerank** *(dense+BM25 RRF, strong control)* | 0.7357 | 0.8462 | 0.9403 | 0.7013 | 0.0953 |
+| **engram · engramdb** | **0.7389** | 0.8529 | 0.9443 | 0.7028 | 0.0960 |
+| engram · Neo4j *(engram-layer)* | 0.7373 | 0.8529 | — | 0.7007 | 0.0960 |
+| engram · pgvector | 0.7232 | 0.8329 | — | 0.6878 | 0.0940 |
 
-**NFCorpus** (323 queries, 3633 docs):
+engram·engramdb nDCG@10 95%CI [0.6952, 0.7777]; dense+rerank [0.6819, 0.7678].
 
-| system | nDCG@10 | Recall@10 | MAP | P@10 |
-|---|---|---|---|---|
-| bm25 | 0.3062 | 0.1521 | 0.1368 | 0.2180 |
-| dense | 0.3174 | 0.1504 | 0.1446 | 0.2316 |
-| dense+rerank | 0.3324 | 0.1614 | 0.1518 | 0.2412 |
-| engram · Neo4j *(engram-layer)* | 0.3378 | 0.1642 | 0.1547 | 0.2430 |
-| **engram · engramdb** | **0.3397** | **0.1659** | **0.1562** | **0.2452** |
+**NFCorpus** (n=323), engramdb run:
 
-Two things this proves on the **real** models, not the floor stack:
+| system | nDCG@10 | R@10 | R@100 | MAP | P@10 |
+|---|---|---|---|---|---|
+| dense+rerank | 0.3324 | 0.1614 | 0.2837 | 0.1518 | 0.2412 |
+| hybrid+rerank | 0.3369 | 0.1659 | 0.2905 | 0.1584 | 0.2427 |
+| **engram · engramdb** | **0.3377** | 0.1631 | 0.2772 | 0.1544 | 0.2430 |
+| engram · Neo4j | 0.3378 | 0.1642 | — | 0.1547 | 0.2430 |
+| engram · pgvector | 0.3374 | 0.1633 | — | 0.1538 | 0.2430 |
 
-1. **engramdb preserves the engram-layer quality win.** engram·engramdb vs
-   engram·Neo4j is +0.0016 (SciFact) / +0.0019 (NFCorpus) nDCG@10 with identical
-   Recall@10 on SciFact — a tie within ANN/tie-break noise. (The `bm25` / `dense` /
-   `dense+rerank` rows came out **byte-identical** across the two backend runs,
-   confirming the harness is reproducible and only the backend changed.) engramdb's
-   usearch ANN + in-house contextual BM25 retrieve equivalently to Neo4j's HNSW.
-2. **The architecture beats standard RAG on real models too.** engram·engramdb
-   over `dense+rerank` (the strong competitor): **+1.39 nDCG / +2.83 recall@10**
-   (SciFact), **+0.73 / +0.45** (NFCorpus); over naive dense, **+9.7 / +2.2** nDCG.
-   So the pipeline's lift is not a small-model artifact — it holds with a 2026 SOTA
-   embedder + reranker. (Both backends sit ~+1.2–1.4 over `dense+rerank`; engramdb
-   is the faster of the two at equal quality.)
+What the rigorous run establishes — and, honestly, what it does **not**:
+
+1. **engramdb preserves the engram-layer's quality (the core "don't lose the win"
+   claim — holds).** engram·engramdb **ties** engram·Neo4j (0.7389 vs 0.7373;
+   0.3377 vs 0.3378) — a difference well inside the noise floor (independent same-
+   config runs of engramdb itself vary ~0.002, and an earlier run logged 0.7408 /
+   0.3411 — see *Reconciliation* below). engramdb is **never worse** than Neo4j on
+   any metric and actually **beats pgvector on SciFact** (0.7389 vs 0.7232): on
+   SciFact pgvector's tsvector BM25 channel underperforms (it surfaced only 21 of
+   the gold hits vs ~273 for engramdb/Neo4j), dragging its fused result *below* even
+   `dense+rerank`. So engramdb matches the **strongest** engram-layer backend.
+   *(Caveat: engramdb vs Neo4j is two approximate-ANN libraries — usearch vs HNSW —
+   so this is "not measurably worse", not evidence engramdb ranks better.)*
+2. **b1 (32× smaller vectors) ties f32** — see the quant section above; verified on
+   the real stack (SciFact 0.7390 vs 0.7389) and by a load-bearing unit test.
+3. **engram's single-hop lift over standard RAG is NOT statistically significant —
+   and is mostly the hybrid fusion, not the graph.** This corrects the earlier
+   "+1.39 nDCG, architecture beats RAG" framing. Paired per-query tests:
+   - engram − `dense+rerank`: Δ +0.0140 (SciFact) / +0.0053 (NFCorpus) nDCG@10, but
+     **95%CI straddles 0** ([−0.0034, +0.0338] / [−0.0011, +0.0118]) and the sign
+     test is **n.s.** (p=0.27 / 0.41; 248/300 and 175/323 queries *tied*).
+   - engram − `hybrid+rerank`: Δ +0.0033 / +0.0008, **n.s.** (p=0.39 / 0.81).
+   So on single-chunk single-hop BEIR — where MMR is a no-op (λ=1.0), PPR is off,
+   and the keyword graph contributes ~0 unique gold hits — engram's distinctive
+   median-proximity / MMR / graph stages add **no measurable nDCG** over a strong
+   hybrid baseline. Most of engram's edge over *naive* `dense+rerank` is simply
+   adding the BM25 channel (which `hybrid+rerank` also has). The architecture's
+   retrieval value, if any, must show up where the graph is actually exercised —
+   **multi-hop** (see the HotpotQA/MuSiQue section) — not single-hop BEIR nDCG.
+
+**Reconciliation of the 0.7408 number.** Earlier runs (README/RESULTS) logged
+engram SciFact 0.7408 / NFCorpus 0.3411; the fresh same-harness runs here give
+0.7373–0.7389 / 0.3377–0.3397. The ~0.003 spread across independent runs **is** the
+run-to-run noise floor (unseeded ANN + tie-breaks), which is exactly why the
+~0.0016 backend delta is reported as a tie, and why a single-run "+0.0140 over
+dense+rerank" without a CI was not a safe basis for a headline.
 
 ## On-disk segment format — design + decision
 

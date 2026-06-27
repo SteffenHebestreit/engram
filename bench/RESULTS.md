@@ -31,20 +31,30 @@ check: every `bm25` row matches across the two runs.)
 ## What this measures: the architecture, not the models
 
 Every system here — `dense`, `dense+rerank`, `engram` — uses the **identical
-embedder and reranker**. So `engram − dense+rerank` is engram's **architecture**
-alone (4-channel DBSF fusion + graph expansion + median-proximity + MMR), with
-the models cancelled out. That delta — *our* way of embedding and retrieving —
-is the number that matters, and it is **positive in every config we tested**:
+embedder and reranker**. So `engram − dense+rerank` cancels the models out. That
+delta is **positive in every config tested** (point estimates, single unseeded runs):
 
-| config (embedder + reranker) | engram | dense+rerank | **arch Δ nDCG@10** | **Δ recall@10** |
+| config (embedder + reranker) | engram | dense+rerank | engram−dense+rerank ΔnDCG@10 | Δrecall@10 |
 |---|---|---|---|---|
-| BGE-M3 + bge-reranker-v2-m3 (SciFact) | 0.7408 | 0.7250 | **+1.58** | +3.10 |
-| BGE-M3 + **Qwen3-Reranker-0.6B** (SciFact) | 0.7723 | 0.7508 | **+2.15** | **+4.00** |
+| BGE-M3 + bge-reranker-v2-m3 (SciFact) | 0.7408 | 0.7250 | +1.58 | +3.10 |
+| BGE-M3 + **Qwen3-Reranker-0.6B** (SciFact) | 0.7723 | 0.7508 | +2.15 | +4.00 |
 | Qwen3-Embed-0.6B + bge-reranker (SciFact) | 0.7409 | 0.7344 | +0.65 | +0.13 |
 | BGE-M3 + bge-reranker-v2-m3 (NFCorpus) | 0.3411 | 0.3324 | +0.87 | +0.52 |
 
-**engram's architecture adds +1.6 to +2.2 nDCG@10 and +3–4 recall@10 over naive
-two-stage RAG with the models held fixed.** Two structural facts fall out:
+> **⚠️ Correction (2026-06-27, after an adversarial review + a rigorous re-run with
+> bootstrap CIs, paired sign tests, and a `hybrid(dense+BM25 RRF)+rerank` control —
+> see [docs/engram-db.md](../docs/engram-db.md)):** the `engram − dense+rerank` delta
+> above is **NOT statistically significant on single-hop BEIR** (paired 95%CI
+> straddles 0; sign-p 0.27 SciFact / 0.41 NFCorpus; ~83% of queries tie), and it is
+> **mostly the added BM25 channel, not** the graph / median-proximity / MMR: a
+> `hybrid+rerank` baseline (dense+BM25 fusion, *no* graph/median/MMR) already reaches
+> 0.7357 on SciFact, and `engram − hybrid+rerank` is +0.003 (n.s.). On single-chunk
+> single-hop corpora MMR is a no-op (λ=1.0), PPR is off, and the keyword graph
+> contributes ~0 unique gold hits, so these benches **cannot** credit engram's
+> distinctive stages. Treat the rows above as "engram ≥ naive 2-stage", and look to
+> the **multi-hop** benchmark below for whether the graph adds *significant* recall.
+
+Two structural observations (now read in light of that correction):
 
 - The architecture is a **robustness layer**: its recall gain is large with a
   weaker embedder (BGE-M3 +3–4) and ≈0 with a SOTA embedder (Qwen3 +0.1) — when

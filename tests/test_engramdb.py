@@ -162,6 +162,54 @@ async def test_b1_quantization_preserves_ranking():
     await store.close()
 
 
+async def test_b1_rescore_shortlist_is_load_bearing():
+    """Stronger b1 test (vs the tight-cluster smoke above): on harder data — a
+    low-rank signal buried in noise, so 1-bit signs are imperfect but exact cosine
+    ranks are clear — prove (a) the k*16 over-fetch is LOAD-BEARING (a 1x shortlist
+    misses true top-k that 16x recovers) and (b) 16x recovers the bulk of the
+    EXACT brute-force top-k. This refutes the 'near-circular cluster test' critique:
+    here a narrow shortlist genuinely fails, so the rescore is doing real work."""
+    import app.store_engramdb as m
+
+    rng = np.random.RandomState(1)
+    n, k = 400, 10
+    sig = rng.normal(size=(n, 8)) @ rng.normal(size=(8, DIM))  # rank-8 signal
+    vecs = (sig + 1.5 * rng.normal(size=(n, DIM))).astype(np.float32)  # + heavy noise
+    vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
+    chunks = [
+        {"id": f"c{i}", "seq": i, "text": f"c{i}", "summary": "", "keywords": [],
+         "embeddings": {"content_embedding": vecs[i].tolist()}}
+        for i in range(n)
+    ]
+    store = EngramDBStore(quantization="b1")
+    await store.connect()
+    await store.init_schema()
+    await store.save_document("d", "t", ["s"], chunks)
+    content = resolve_vector_channels(SETTINGS)[0]
+    qs = [
+        (lambda v: (v / np.linalg.norm(v)).astype(np.float32))(rng.normal(size=DIM))
+        for _ in range(15)
+    ]
+    exacts = [{int(i) for i in np.argsort(-(vecs @ qv))[:k]} for qv in qs]  # oracle
+
+    async def mean_recall_vs_exact(mult):
+        m._B1_RESCORE_MULT = mult
+        tot = 0.0
+        for qv, ex in zip(qs, exacts):
+            got = {int(h["id"][1:]) for h in await store.vector_search(content, qv.tolist(), k)}
+            tot += len(got & ex) / k
+        return tot / len(qs)
+
+    try:
+        r1 = await mean_recall_vs_exact(1)    # narrow: hamming top-k only
+        r16 = await mean_recall_vs_exact(16)  # shipped: k*16 shortlist + rescore
+    finally:
+        m._B1_RESCORE_MULT = 16  # restore module default
+    assert r16 >= r1 + 0.1, (r1, r16)  # the over-fetch is genuinely load-bearing
+    assert r16 >= 0.85, r16            # and recovers the bulk of the exact top-k
+    await store.close()
+
+
 async def test_recency_feedback_and_persistence(monkeypatch, tmp_path):
     path = str(tmp_path / "engramdb.pkl")
     store = EngramDBStore(path)

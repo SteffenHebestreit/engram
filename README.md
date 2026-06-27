@@ -524,12 +524,18 @@ beating naive single-vector RAG, BM25, *and* the standard dense→rerank pipelin
 | dense + rerank — *standard 2-stage* | 0.725 | 0.825 | 0.693 |
 | **engram** | **0.741** | **0.856** | **0.704** |
 
-engram wins **every metric on both** BEIR datasets (SciFact + NFCorpus). The line
-that matters is `engram` vs `dense+rerank` — *identical models, the only
-difference is engram's architecture* (4-channel fusion + graph + median-proximity
-+ MMR). That gap — **our contribution, with the models cancelled out** — is
-**+1.6 nDCG@10 / +3.1 recall@10** here, and it holds across every model
-combination we tried (see [RESULTS.md](bench/RESULTS.md)).
+engram edges `dense+rerank` on these point estimates (identical models). **But be
+honest about what that gap is** (rigorous re-run with bootstrap CIs + paired sign
+tests + a `hybrid(dense+BM25)+rerank` control — [RESULTS.md](bench/RESULTS.md),
+[docs/engram-db.md](docs/engram-db.md)): on **single-hop** BEIR the `engram −
+dense+rerank` delta is **not statistically significant** (95%CI straddles 0,
+~83% of queries tie) and is **mostly the added BM25 channel** — a plain hybrid
+fusion baseline captures almost all of it; engram's distinctive median-proximity /
+MMR / graph stages add no *measurable* single-hop nDCG (MMR is a no-op and the
+graph is barely exercised when every doc is one chunk). engram's architectural
+value shows up where the graph is actually used — **multi-hop** (below) — and in
+the operational layer (memory write-path, multi-tenancy, recency), not single-hop
+BEIR nDCG.
 
 **Two findings that make the advantage actionable** (full study in
 [RESULTS.md §1d–1e](bench/RESULTS.md)):
