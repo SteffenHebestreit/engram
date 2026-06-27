@@ -116,8 +116,6 @@ the citation, not a claimed number.
 
 ## Also worth doing on the bigger box
 
-- **Local generative LLM** (the unified memory fits a 14–32B model): unblocks the
-  M1 C5 LLM contradiction tier, LLM entity-KG extraction, and query decomposition
-  for the multi-hop tie→win — all currently gated on no online LLM. See
-  [docs/competitive-plan.md](../docs/competitive-plan.md) and
-  [docs/memory-writepath-plan.md](../docs/memory-writepath-plan.md).
+- **Local generative LLM** (the unified memory fits a 14–32B model): unblocks
+  LLM entity-KG extraction and query decomposition for multi-hop — currently gated
+  on no online LLM. See [docs/memory-writepath-plan.md](../docs/memory-writepath-plan.md).

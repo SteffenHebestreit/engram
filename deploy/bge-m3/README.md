@@ -11,8 +11,8 @@ outputs from one model, one forward pass:
 
 engram already runs BGE-M3 for dense retrieval but discards the sparse and
 ColBERT signals. Point all three env vars at this one container and they light
-up with **no extra model** — the unique advantage from the
-[competitive roadmap](../../docs/competitive-roadmap.md).
+up with **no extra model** — dense, learned-sparse, and ColBERT from a single
+BGE-M3 deployment.
 
 ## Run it with engram
 

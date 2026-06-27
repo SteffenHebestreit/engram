@@ -1,11 +1,11 @@
 # engram competitive scorecard (2026-06)
 
 A decision-oriented snapshot: where engram stands against the most popular
-retrieval/memory solutions **after this development run** (multi-tenancy,
-contextual retrieval, recency, reranker sidecar, adaptive routing, feedback —
-all built + tested, awaiting merge). Companion to the deeper
-[competitive-plan.md](competitive-plan.md) / [competitive-roadmap.md](competitive-roadmap.md);
-this one is the "so where are we, and what's the move" summary.
+retrieval/memory solutions. Honest framing (see [bench/RESULTS.md](../bench/RESULTS.md)
+and [engram-db.md](engram-db.md)): engram delivers **parity** retrieval quality
+(CI/significance-tested) and wins on **performance** (the embedded engramdb backend)
++ operational features — not a benchmark-quality crown. Grades: **CA** = clear
+advantage, **TS** = table stakes / tie, **GAP** = behind.
 
 Grounded in a June-2026 web scan (sources at the bottom). Honest-framing rule:
 **TS** = table-stakes/parity, **CA** = clear advantage, **GAP** = we lag.
