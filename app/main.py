@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
     await app.state.store.close()
 
 
-app = FastAPI(title="engram", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="engram", version="0.3.0", lifespan=lifespan)
 
 
 @app.get("/health")

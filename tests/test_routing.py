@@ -40,10 +40,10 @@ def _stub_empty(monkeypatch):
     async def fake_embed_text(client, text):
         return [1.0, 0.0, 0.0]
 
-    async def empty_vec(driver, index_name, embedding, k):
+    async def empty_vec(driver, index_name, embedding, k, tenant_id=None):
         return []
 
-    async def empty_ft(driver, query, k):
+    async def empty_ft(driver, query, k, tenant_id=None):
         return []
 
     monkeypatch.setattr(search_mod, "embed_text", fake_embed_text)

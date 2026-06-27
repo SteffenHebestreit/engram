@@ -5,7 +5,9 @@ All notable changes to **engram**. Format loosely follows
 
 ## [Unreleased]
 
-Feature branches built and tested, awaiting merge:
+## [0.3.0] - 2026-06-27
+
+### Added
 
 - **Multi-tenant isolation** (`tenant_id` on ingest + search, opt-in) — the
   biggest adoption gap for SaaS RAG, and security-sensitive: every one of the
@@ -16,7 +18,7 @@ Feature branches built and tested, awaiting merge:
   reused `document_id` can't collide or let one tenant overwrite another's doc.
   Neo4j over-fetches the ANN top-k before filtering; pgvector raises
   `hnsw.ef_search` in-transaction (both keep the filtered top-k full). Gated by a
-  **0%-cross-tenant-leakage** test on both live backends. Branch `multi-tenancy`.
+  **0%-cross-tenant-leakage** test on both live backends.
 - **Contextual Retrieval** (`CONTEXTUAL_RETRIEVAL_ENABLED`, opt-in) — Anthropic's
   technique: at ingest an LLM writes a short document-situating context per chunk,
   prepended before embedding so the content vector encodes document-level identity
@@ -28,7 +30,7 @@ Feature branches built and tested, awaiting merge:
   seam. Includes **contextual BM25**: the context is also indexed for fulltext
   (Neo4j: alongside text/summary; pgvector: a separate `context_tsv` generated
   column) so the lexical channel benefits too — Anthropic's larger reported gain —
-  additively (empty when off → unchanged behaviour). Branch `contextual-retrieval`.
+  additively (empty when off → unchanged behaviour).
 - **Recency / temporal decay** (`RECENCY_ENABLED`, opt-in) — the agent-*memory*
   signal: after reranking, blend an exponential recency factor on each candidate's
   document age into the final ordering, so among similarly-relevant results the
@@ -37,23 +39,47 @@ Feature branches built and tested, awaiting merge:
   overwrite. No schema/ingest change — reuses document `created_at` via a batched
   read (like the sparse/near-dup reads), so the hot retrieval queries are
   untouched. `RECENCY_WEIGHT` / `RECENCY_HALF_LIFE_DAYS` tune it; `SearchResult`
-  gains `recency_score`. Branch `recency-scoring`.
+  gains `recency_score`.
 
 - **Reranker sidecar** (`deploy/reranker`) — serves Qwen3-Reranker in engram's
   reranker wire format, since TEI can't serve its causal-LM format. The measured
   **+3.15 / +3.84 nDCG@10** (SciFact / NFCorpus) reranker upgrade, made
-  deployable. Branch `reranker-sidecar`.
+  deployable.
 - **Adaptive query routing** (`ROUTER_STRATEGY=heuristic`) — a no-LLM `ROUTERS`
   registry + classifier that auto-selects a preset per query (factoid →
   balanced, complex/thematic → max_quality); an explicit preset always wins.
-  Branch `adaptive-routing`.
+ 
 - **Implicit-relevance feedback** (`POST /feedback`, MCP `mark_used`) — an agent
   reports which chunks it grounded its answer on; engram persists the
   (query → used-chunk) positives as the foundation for offline hard-negative
-  mining + weight tuning. Branch `feedback-loop`.
+  mining + weight tuning.
 
-Pending bigger-model benchmarks are queued in [bench/PENDING.md](bench/PENDING.md)
-(need a higher-/unified-memory box).
+### Changed
+
+- **`GRAPH_PROXIMITY_MODE` now defaults to `decay`** (Personalized PageRank is
+  opt-in). A full store/graph evaluation showed PPR adds **no measurable quality**
+  over trivial per-hop decay on both saturated (HotpotQA) and non-saturated
+  (MuSiQue) multi-hop benchmarks, while being the single most expensive,
+  fastest-growing store operation (~65% of search latency at 20k docs; ~2.7×
+  faster to drop it) and requiring the Neo4j GDS plugin. Set
+  `GRAPH_PROXIMITY_MODE=ppr` to opt back in.
+
+### Evaluation & docs
+
+- **Store/graph evaluation** ([docs/engram-db.md](docs/engram-db.md)) — latency
+  profiling + scale sweep + PPR decomposition, quality on SciFact, NFCorpus,
+  HotpotQA and MuSiQue, and a chunking ablation. Headlines: **pgvector** wins
+  below ~5k docs, **Neo4j + decay** above (it scales nearly flat while pgvector
+  grows); the graph adds ≤ ~2 pt on multi-hop only, PPR and `NEXT_CHUNK` add ~0 —
+  the dense embedder + cross-encoder reranker do the work. This is also the design
+  brief for a future purpose-built **Engram-DB** store (native adjacency + decay,
+  no PPR).
+- **Competitive scorecard** ([docs/competitive-scorecard.md](docs/competitive-scorecard.md))
+  vs LangChain/LlamaIndex, RAGFlow, Weaviate, Zep/Mem0.
+- **Benchmark harness** extended: `bench/profile_latency.py` (latency breakdown +
+  scale sweep), parameterized datasets (`BENCH_DATASET`,
+  `BENCH_MULTIHOP_DATASET=musique`), and `bench/chunk_context.py`. Bigger-model
+  runs remain queued in [bench/PENDING.md](bench/PENDING.md).
 
 ## [0.2.0] - 2026-06-26
 
