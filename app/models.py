@@ -63,6 +63,9 @@ class SearchResult(BaseModel):
     sparse_score: float = 0.0
     fused_score: float
     rerank_score: float
+    # exponential recency factor in (0, 1] on the chunk's document age (1.0 = new),
+    # blended into the final ordering when recency scoring is enabled; 0.0 otherwise
+    recency_score: float = 0.0
 
 
 class SearchResponse(BaseModel):

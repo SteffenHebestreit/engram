@@ -475,6 +475,25 @@ class PgvectorStore:
                 rows = await cur.fetchall()
         return {r["id"]: r["near_dup_of"] for r in rows}
 
+    async def get_chunk_recency(self, chunk_ids: list[str]) -> dict[str, float]:
+        from psycopg.rows import dict_row
+
+        if not chunk_ids:
+            return {}
+        async with self._pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    """
+                    SELECT c.id AS id,
+                           extract(epoch FROM (now() - d.created_at)) AS age
+                    FROM chunks c JOIN documents d ON d.id = c.doc_id
+                    WHERE c.id = ANY(%s)
+                    """,
+                    (chunk_ids,),
+                )
+                rows = await cur.fetchall()
+        return {r["id"]: float(r["age"]) for r in rows}
+
     # ── retrieval ────────────────────────────────────────────────────────────
     async def vector_search(
         self,

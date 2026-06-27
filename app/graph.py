@@ -667,6 +667,27 @@ async def get_near_dup_links(
         return {record["id"]: record["canonical"] async for record in result}
 
 
+async def get_chunk_recency(
+    driver: AsyncDriver, chunk_ids: list[str]
+) -> dict[str, float]:
+    """`{chunk_id: age_seconds}` — how old each chunk's document is, by the DB
+    clock. Read once per search over the candidate pool to blend a recency factor
+    into the final ordering; no new index, no change to the hot read queries."""
+    if not chunk_ids:
+        return {}
+    async with driver.session() as session:
+        result = await session.run(
+            """
+            MATCH (c:Chunk)-[:PART_OF]->(d:Document)
+            WHERE c.id IN $ids AND d.created_at IS NOT NULL
+            RETURN c.id AS id,
+                   datetime().epochSeconds - d.created_at.epochSeconds AS age
+            """,
+            ids=chunk_ids,
+        )
+        return {record["id"]: float(record["age"]) async for record in result}
+
+
 async def fetch_siblings(
     driver: AsyncDriver,
     chunk_ids: list[str],

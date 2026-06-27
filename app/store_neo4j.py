@@ -126,6 +126,9 @@ class Neo4jStore:
     async def get_near_dup_links(self, chunk_ids: list[str]) -> dict[str, str]:
         return await graph.get_near_dup_links(self._driver, chunk_ids)
 
+    async def get_chunk_recency(self, chunk_ids: list[str]) -> dict[str, float]:
+        return await graph.get_chunk_recency(self._driver, chunk_ids)
+
     async def graph_proximity(
         self, seed_ids: list[str], candidate_ids: list[str], damping: float
     ) -> dict[str, float] | None:

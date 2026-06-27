@@ -107,6 +107,36 @@ def sparse_scores(
     return [value / top for value in raw]
 
 
+def recency_decay(age_seconds: float, half_life_seconds: float) -> float:
+    """Exponential recency in (0, 1]: 1.0 for a brand-new chunk, 0.5 at one
+    half-life, decaying toward 0 for old content. A non-positive half-life (or
+    age) disables decay (returns 1.0)."""
+    if half_life_seconds <= 0 or age_seconds <= 0:
+        return 1.0
+    return float(0.5 ** (age_seconds / half_life_seconds))
+
+
+def recency_blend(
+    rerank_scores: list[float], recency_scores: list[float], weight: float
+) -> list[float]:
+    """Blend reranker relevance with recency for the final ordering.
+
+    Reranker output may be logits or probabilities, so its absolute scale is not
+    comparable to recency's [0, 1]; the relevance is therefore min-max normalized
+    within the result set, then blended as
+    ``(1 - weight) * norm_relevance + weight * recency``. `weight` = 0 reproduces
+    pure-relevance ordering; 1 sorts purely by recency. Applied *after* reranking
+    so recency is an orthogonal final signal the reranker cannot overwrite."""
+    n = len(rerank_scores)
+    if n == 0:
+        return []
+    arr = np.asarray(rerank_scores, dtype=np.float64)
+    spread = arr.max() - arr.min()
+    norm = (arr - arr.min()) / spread if spread > 0 else np.full(n, 0.5)
+    rec = np.asarray(recency_scores, dtype=np.float64)
+    return ((1.0 - weight) * norm + weight * rec).tolist()
+
+
 def median_proximity_scores(embeddings: list[list[float]]) -> list[float]:
     """Score each embedding by cosine similarity to the element-wise median
     vector of the whole result set, mapped to [0, 1].

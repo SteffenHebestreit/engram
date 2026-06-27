@@ -187,6 +187,16 @@ class Settings(BaseSettings):
     rerank_top_k: int = 15
     final_top_k: int = 8
 
+    # recency / temporal decay (opt-in; the "memory" half of engram). After
+    # reranking, blend an exponential recency factor on each candidate's document
+    # age into the final ordering, so among similarly-relevant results the newer
+    # ones rank higher — what an agent memory needs and pure relevance ranking
+    # ignores. Orthogonal to relevance and applied *post-rerank*, so it is not
+    # overwritten by the cross-encoder. recency_weight=0 / disabled = no change.
+    recency_enabled: bool = False
+    recency_weight: float = 0.2
+    recency_half_life_days: float = 30.0
+
     # MMR shortlist selection: trade relevance (lambda) against redundancy
     # with already-picked candidates (1 - lambda); 1.0 disables the penalty
     mmr_lambda: float = 0.7
@@ -297,6 +307,9 @@ SEARCH_TUNABLE_FIELDS: frozenset[str] = frozenset(
         "dedup_enabled",
         "rerank_top_k",
         "final_top_k",
+        "recency_enabled",
+        "recency_weight",
+        "recency_half_life_days",
         "reranker_enabled",
         "reranker_strategy",
         "mmr_lambda",

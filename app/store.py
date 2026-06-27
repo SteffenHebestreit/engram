@@ -135,6 +135,13 @@ class Store(Protocol):
         without links simply returns `{}`."""
         ...
 
+    async def get_chunk_recency(self, chunk_ids: list[str]) -> dict[str, float]:
+        """`{chunk_id: age_seconds}` — the age of each chunk's document by the
+        store's own clock. Read once per search over the candidate pool to blend a
+        recency factor into the final ordering (the agent-memory signal). Opt-in,
+        so a backend that can't supply ages returns `{}`."""
+        ...
+
     async def graph_proximity(
         self, seed_ids: list[str], candidate_ids: list[str], damping: float
     ) -> dict[str, float] | None:

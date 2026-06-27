@@ -386,3 +386,48 @@ async def test_no_hits_returns_empty(monkeypatch):
     monkeypatch.setattr(graph,"fulltext_search", fake_fulltext_search)
 
     assert await search_mod.search(Neo4jStore(None), None, "anything") == []
+
+
+async def test_recency_reorders_toward_newer(patched, monkeypatch):
+    # pure recency weight: the newest chunk (F, age 0) must rank first even though
+    # the reranker scored B highest — recency is applied after reranking
+    patched.recency_enabled = True
+    patched.recency_weight = 1.0
+    patched.recency_half_life_days = 1.0
+    ages = {"A": 1e9, "B": 1e9, "C": 1e9, "D": 1e9, "E": 1e9, "F": 0.0}
+
+    async def fake_recency(driver, chunk_ids):
+        return {i: ages[i] for i in chunk_ids if i in ages}
+
+    monkeypatch.setattr(graph, "get_chunk_recency", fake_recency)
+    results = await search_mod.search(Neo4jStore(None), None, "test query")
+    assert results[0].chunk_id == "F"
+    assert results[0].recency_score == 1.0
+
+
+async def test_recency_weight_zero_keeps_relevance_order(patched, monkeypatch):
+    # recency computed (scores populated) but weight 0 -> ordering is unchanged
+    patched.recency_enabled = True
+    patched.recency_weight = 0.0
+
+    async def fake_recency(driver, chunk_ids):
+        return {i: 0.0 for i in chunk_ids}  # all brand new
+
+    monkeypatch.setattr(graph, "get_chunk_recency", fake_recency)
+    results = await search_mod.search(Neo4jStore(None), None, "test query")
+    assert [r.chunk_id for r in results] == ["B", "A", "F", "D", "E", "C"]
+    assert all(r.recency_score == 1.0 for r in results)
+
+
+async def test_recency_disabled_skips_store_read(patched, monkeypatch):
+    called = {"n": 0}
+
+    async def boom_recency(driver, chunk_ids):
+        called["n"] += 1
+        return {}
+
+    monkeypatch.setattr(graph, "get_chunk_recency", boom_recency)
+    results = await search_mod.search(Neo4jStore(None), None, "test query")
+    # recency_enabled defaults False -> the recency read is never attempted
+    assert called["n"] == 0
+    assert all(r.recency_score == 0.0 for r in results)

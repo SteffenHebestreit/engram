@@ -1,6 +1,43 @@
 import math
 
-from app.scoring import median_proximity_scores, sparse_dot, sparse_scores
+from app.scoring import (
+    median_proximity_scores,
+    recency_blend,
+    recency_decay,
+    sparse_dot,
+    sparse_scores,
+)
+
+
+def test_recency_decay_halves_at_one_half_life():
+    assert recency_decay(0.0, 100.0) == 1.0  # brand new
+    assert math.isclose(recency_decay(100.0, 100.0), 0.5)  # one half-life
+    assert math.isclose(recency_decay(200.0, 100.0), 0.25)  # two half-lives
+    assert recency_decay(1e9, 100.0) < 1e-6  # ancient -> ~0
+
+
+def test_recency_decay_disabled_returns_one():
+    assert recency_decay(500.0, 0.0) == 1.0  # half_life<=0 disables decay
+
+
+def test_recency_blend_weight_zero_is_pure_relevance():
+    # weight 0 -> min-max normalized relevance only (recency ignored)
+    out = recency_blend([3.0, 1.0, 2.0], [0.0, 1.0, 1.0], 0.0)
+    assert out[0] > out[2] > out[1]  # 3 > 2 > 1 preserved
+
+
+def test_recency_blend_weight_one_is_pure_recency():
+    out = recency_blend([3.0, 1.0, 2.0], [0.1, 0.9, 0.5], 1.0)
+    assert out == [0.1, 0.9, 0.5]  # relevance ignored, recency passed through
+
+
+def test_recency_blend_tilts_toward_recent():
+    # item 0 is most relevant but old; item 1 is nearly as relevant and brand new.
+    # relevance min-max normalizes to [1.0, 0.95, 0.0]; with a 0.5 blend the newer
+    # near-top item (0.5·0.95 + 0.5·1.0 = 0.975) overtakes the stale top
+    # (0.5·1.0 + 0.5·0.0 = 0.5).
+    out = recency_blend([3.0, 2.9, 1.0], [0.0, 1.0, 0.0], 0.5)
+    assert out[1] > out[0] > out[2]
 
 
 def test_empty():

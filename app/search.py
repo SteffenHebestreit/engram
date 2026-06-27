@@ -19,7 +19,14 @@ from .pipeline import get_expander, get_fusion, get_proximity
 from .presets import apply_preset
 from .rerank import get_reranker
 from .routing import get_router
-from .scoring import autocut, median_proximity_scores, mmr_select, sparse_scores
+from .scoring import (
+    autocut,
+    median_proximity_scores,
+    mmr_select,
+    recency_blend,
+    recency_decay,
+    sparse_scores,
+)
 
 log = logging.getLogger(__name__)
 
@@ -212,12 +219,33 @@ async def search(
         rerank_scores = [c["fused_score"] for c in shortlist]
     for cand, score in zip(shortlist, rerank_scores):
         cand["rerank_score"] = score
-    shortlist.sort(key=lambda c: c["rerank_score"], reverse=True)
+        cand["recency_score"] = 0.0
+
+    # recency / temporal decay (opt-in, the agent-memory signal): blend an
+    # exponential recency factor on each candidate's document age into the final
+    # ordering, so among similarly-relevant results the newer ones rank higher.
+    # Applied AFTER reranking, so it is an orthogonal signal the cross-encoder
+    # can't overwrite. The ranking key is the blend; pure relevance otherwise.
+    rank_scores = list(rerank_scores)
+    if settings.recency_enabled and shortlist:
+        ages = await store.get_chunk_recency([c["id"] for c in shortlist])
+        if ages:
+            half_life = settings.recency_half_life_days * 86400.0
+            recency = [
+                recency_decay(ages[c["id"]], half_life) if c["id"] in ages else 0.5
+                for c in shortlist
+            ]
+            rank_scores = recency_blend(rerank_scores, recency, settings.recency_weight)
+            for cand, rec in zip(shortlist, recency):
+                cand["recency_score"] = rec
+    for cand, rank in zip(shortlist, rank_scores):
+        cand["_rank_score"] = rank
+    shortlist.sort(key=lambda c: c["_rank_score"], reverse=True)
 
     final = shortlist[:final_top_k]
     if settings.autocut_enabled:
         keep = autocut(
-            [c["rerank_score"] for c in final],
+            [c["_rank_score"] for c in final],
             settings.autocut_min_keep,
             settings.autocut_min_gap,
         )
@@ -254,6 +282,7 @@ async def search(
             sparse_score=round(c.get("sparse_score", 0.0), 4),
             fused_score=round(c["fused_score"], 4),
             rerank_score=round(c["rerank_score"], 4),
+            recency_score=round(c.get("recency_score", 0.0), 4),
         )
         for c in final
     ]
