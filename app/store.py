@@ -216,6 +216,9 @@ def _ensure_builtin_stores() -> None:
         from . import store_pgvector  # noqa: F401  (registers "pgvector")
     except Exception:  # pragma: no cover - pgvector deps are optional
         pass
+
+    from . import store_engramdb  # noqa: F401  (registers "engramdb", embedded)
+
     _builtins_loaded = True
 
 

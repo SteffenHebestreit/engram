@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     # PostgreSQL + pgvector backend (used when store_backend == "pgvector")
     postgres_dsn: str = "postgresql://engram:engram@localhost:5432/engram"
 
+    # Engram-DB embedded backend (store_backend == "engramdb"): optional pickle
+    # snapshot path for persistence; empty = in-memory only (prototype)
+    engramdb_path: str = ""
+
     # startup guard when the embedding model/dim or channel set no longer match
     # the indexes already in the store: "error" = refuse to start, "warn" = log
     # and adopt, "off" = silently adopt

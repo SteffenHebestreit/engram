@@ -336,8 +336,18 @@ change these deltas.
 
 ## Status
 
-- `bench/profile_latency.py` shipped (this branch). Fake-models numbers above are
-  real; real-models + large-scale sweep are the next measurements (need the
-  endpoints / a bigger box).
-- Ambition tier deferred until the real-models share + scale curve are in hand —
-  per the "decide after profiling" call.
+- `bench/profile_latency.py` shipped. Fake-models numbers above are real;
+  real-models + large-scale sweep are the next measurements (need the endpoints /
+  a bigger box).
+- **Prototype shipped** ([app/store_engramdb.py](../app/store_engramdb.py),
+  `STORE_BACKEND=engramdb`) — Tier 1 of the plan, embodying the findings: embedded
+  single-process store with in-memory vector (brute-force cosine), BM25 (inverted
+  index over text+summary+context → contextual BM25), **native-adjacency** graph
+  (NEXT_CHUNK + keyword, no SQL self-join), **decay only (no PPR)**, plus
+  multi-tenancy / recency / sparse / near-dup / feedback. Optional pickle snapshot
+  (`ENGRAMDB_PATH`). Community synthesis + structured-entity graph deliberately
+  omitted. Runs the full pipeline + passes an in-process test suite (no server).
+- **Next for the prototype → production tier:** swap brute-force cosine for an ANN
+  index (usearch/HNSW) + int8/binary quantization (the scale lever), and the
+  whole-snapshot pickle for an incremental on-disk segment format; then run the
+  real-models latency + 50k–500k sweep to size the win and decide how far to push.

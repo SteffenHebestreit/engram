@@ -95,11 +95,12 @@ pipeline seams, so a third-party backend can register via `engram.plugins`.
 
 | Backend | `STORE_BACKEND` | What you get |
 |---|---|---|
-| Neo4j | `neo4j` (default) | graph + vector in one store; GDS Personalized-PageRank proximity; structured-entity ingest |
+| Neo4j | `neo4j` (default) | graph + vector in one store; GDS Personalized-PageRank proximity; structured-entity ingest; community synthesis |
 | pgvector | `pgvector` | PostgreSQL + pgvector: vector (HNSW/cosine) + fulltext (`tsvector`) + sequence/keyword siblings |
+| Engram-DB | `engramdb` | **Embedded, no server** ([app/store_engramdb.py](../app/store_engramdb.py)): in-process vector + BM25 + **native-adjacency** graph (NEXT_CHUNK / keyword) + decay. Purpose-built from the evaluation — only the parts that pull their weight, none of the overhead. Prototype: brute-force ANN + optional pickle snapshot (`ENGRAMDB_PATH`); **no** PPR/GDS, community synthesis, or structured-entity graph. See [engram-db.md](engram-db.md). |
 
-The two share the exact same retrieval pipeline and scoring math; they differ
-only in capabilities the SQL backend can't provide:
+All share the exact same retrieval pipeline and scoring math; they differ only in
+capabilities a given backend can't (or deliberately doesn't) provide:
 
 - **No graph-activation proximity.** pgvector has no GDS PageRank, so
   `graph_proximity` returns `None` and the `ppr` strategy transparently falls
