@@ -210,6 +210,35 @@ To exercise `NEXT_CHUNK`, SciFact abstracts were force-split (`CHUNK_TARGET_CHAR
   content. (Small chunks do raise Recall@100 — more surface area — but rank top-k
   worse.)
 
+### Chunk-level NEXT_CHUNK — SQuAD answer-span coverage (the right metric)
+
+The doc-level ablation can't see NEXT_CHUNK, so this uses a chunk-level metric with
+no fuzzy qrels: each SQuAD article = one document (paragraphs concatenated), chunked
+small (`CHUNK_TARGET_CHARS=300`, `METADATA_EXTRACTOR=none`); **answer-coverage@10** =
+the gold answer string appears in the returned chunks. pgvector, 400 questions / 48
+articles:
+
+| arm | answer-coverage@10 |
+|---|---|
+| NEXT_CHUNK **on** (seed=8, hops=2) | 0.9450 (378/400) |
+| NEXT_CHUNK **off** (seed=0) | 0.9425 (377/400) |
+
+- **+0.25 pt — literally one question out of 400.** Even with a metric built to
+  expose it, NEXT_CHUNK adds essentially nothing here: SQuAD answers sit in a single
+  paragraph the question matches directly, so dense+rerank already covers them and
+  there's no split-context for the sequence chain to recover.
+- **Verdict on the chunking thesis:** across *every* benchmark we can run —
+  doc-level (SciFact) and chunk-level (SQuAD) — NEXT_CHUNK does not move retrieval
+  metrics. Its only plausible remaining value is **context completeness for a
+  generative reader** (adjacent chunks improving the *answer*, not the *retrieval*),
+  which needs an LLM + answer-quality metric to measure (gated). On retrieval
+  metrics it's a no-op — keep it for read-time context, don't expect ranking lift.
+
+This (and the store/PPR decision) means **engram's graph layer adds ≤ ~2 pt only on
+multi-hop keyword bridges; PPR and NEXT_CHUNK add ~0** on everything measured — the
+dense embedder + cross-encoder reranker already do the work. The graph is cheap
+insurance + context, not a ranking lever, on standard benchmarks.
+
 This is a *separate* claim from the store/PPR decision, which is settled.
 
 ### Latency scale sweep (profiler, realistic-corpus, `--fake-models`)
