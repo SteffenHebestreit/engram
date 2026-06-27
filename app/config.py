@@ -28,8 +28,9 @@ class Settings(BaseSettings):
     engramdb_path: str = ""
     # vector quantization for the ANN index: "f16" (½ memory, verified lossless
     # for ranking — the default), "f32" (exact), "i8" (¼ memory; top-k identical,
-    # ~1pt deep-recall dip — the memory moat for large/unbounded memory), "b1"
-    # (1/32 memory, binary — needs a hamming metric, not wired yet).
+    # ~1pt deep-recall dip), "b1" (1/32 memory, binary — implemented via a 2-stage
+    # hamming-shortlist + exact-cosine rescore, so the final ranking stays
+    # full-precision; matches f32 on the real stack). The deep memory moat.
     engramdb_quantization: str = "f16"
 
     # startup guard when the embedding model/dim or channel set no longer match

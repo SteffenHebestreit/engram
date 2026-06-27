@@ -29,7 +29,7 @@ The **verified, robust** wins are: the **reranker** (+3–4 nDCG, every system),
 and the **backend/quant** (engramdb ties Neo4j / beats pgvector, b1 ties f32,
 faster). See [docs/engram-db.md](../docs/engram-db.md) for the corrected analysis.
 
-## The runs to do (each ALONE — never parallel; `docker stop` to kill, see [[bench-run-sequentially]])
+## The runs to do (each ALONE — never run two GPU benches in parallel: shared DB + GPU; `docker stop` to kill)
 
 All inherit the **prompt fix** (`embedder.default_prompt_name = None`, so engram's
 E1 instruction is the only one applied). Set `EMBEDDING_DIM` to the model's native

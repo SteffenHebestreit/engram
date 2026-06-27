@@ -2,31 +2,43 @@
   <img src="logo.svg" alt="engram" width="480">
 </p>
 
-**Retrieval-Augmented Generation that doesn't just *search* your documents, it *remembers* them.**
+**A retrieval engine for agents: parity retrieval quality in a single embedded process — faster and far more memory-efficient than a server-backed stack.**
+
+engram matches the quality of a well-tuned hybrid(dense + BM25) + rerank pipeline
+— CI- and significance-tested, see [Benchmarks](#benchmarks) — and wins on
+**performance and deployment**:
+
+- **Parity quality, honestly measured.** Ties a tuned hybrid + rerank baseline
+  *and* the Neo4j backend on single-hop and multi-hop BEIR (bootstrap CIs + paired
+  sign tests). No quality-superiority claims — just verified parity.
+- **Embedded, no server.** The `engramdb` backend runs **in-process**: the fastest
+  backend at every scale, with **~32× less vector memory** (b1 quantization) and
+  **~2× faster multi-hop** than Neo4j + PPR — at the same quality.
+- **Pluggable store.** Or run the identical pipeline on **Neo4j** (graph + GDS) or
+  **PostgreSQL + pgvector** — pick by scale and the infra you already run.
+- **Built for agents.** An **MCP server**, multi-tenant isolation, recency, and an
+  opt-in agent-memory write-path (`/feedback`), over a hybrid + graph +
+  cross-encoder pipeline.
+
+---
+
+### Why the name
 
 An *engram* is the physical trace a memory leaves in a brain. That's what
 ingestion leaves here: not a row in an index, but a structured imprint
-(linked, labelled, embedded three ways) that search can later *re-activate*.
-
-The name unpacks into exactly what it is:
-**E**dge · **N**ode · **G**enerative · **R**etrieval · **A**ugmented · **M**emory.
+(linked, labelled, embedded three ways) that search can later *re-activate*. It
+unpacks into exactly what it is —
+**E**dge · **N**ode · **G**enerative · **R**etrieval · **A**ugmented · **M**emory:
 
 - **Edge + Node**, the graph: chunks, documents and keywords wired by `PART_OF`, `NEXT_CHUNK` and `HAS_KEYWORD`.
 - **Generative · Retrieval · Augmented**, the RAG, hiding in plain sight inside en**GRA**m.
 - **Memory**, the engram itself: a trace you re-activate, not a row you look up.
 
-That's why there's no `RAG` suffix: it's already in the name.
-
-Most RAG systems are a flashlight in a dark warehouse: they point at the one
-shelf that looks similar to your question and hope for the best. **engram**
-is a team of librarians with a map of the whole building. They know what every
-page says, what it *means*, what it's *about*, which page comes before and
-after it, and which other books talk about the same things.
-
-One Neo4j database. Four search channels. A knowledge graph. And a scoring
-pipeline built from ideas that retrieval research says actually work (HyDE,
-DBSF, convex fusion, Personalized PageRank, MMR, median-proximity scoring and
-cross-encoder reranking), all in one small, readable FastAPI service.
+Under the hood: four search channels, a knowledge graph, and a scoring pipeline
+built from ideas retrieval research says work (HyDE, DBSF convex fusion, graph
+proximity, MMR, median-proximity scoring, cross-encoder reranking) — in one small,
+readable FastAPI service, over a pluggable store (embedded **engramdb** / Neo4j /
+pgvector).
 
 ---
 
@@ -256,6 +268,14 @@ docker compose --profile pgvector up -d postgres
 STORE_BACKEND=pgvector docker compose up -d --build api
 ```
 
+Want **zero servers**? The embedded `engramdb` backend runs the store in-process —
+no database to deploy, fastest at every scale, and `ENGRAMDB_QUANTIZATION=b1` cuts
+vector memory ~32×, all at parity quality:
+
+```bash
+STORE_BACKEND=engramdb docker compose up -d --build api
+```
+
 The API is now listening on `localhost:8088`. Endpoints running on the Docker
 host itself are reachable from inside the containers as
 `http://host.docker.internal:<port>`. Use that instead of `localhost` in
@@ -354,12 +374,16 @@ It exposes `search`, `get_chunk_context`, `list_documents`, `search_themes` and
 pipeline). engram does not generate answers; it feeds the calling agent perfect
 context.
 
-**It also learns from use.** After an agent answers, it calls `mark_used` (or
-`POST /feedback`) with the chunk ids it actually grounded the answer on. engram
-records those (query → used-chunk) positives so an offline job can mine hard
-negatives and tune fusion weights — an **agent-in-the-loop learning signal a
-stateless retriever can't capture**. It's the foundation of a flywheel: the more
-agents use engram, the better its ranking gets on *your* traffic.
+**It also learns from use** (opt-in, `MEMORY_BOOST_ENABLED`). After an agent
+answers, it calls `mark_used` (or `POST /feedback`) with the chunk ids it grounded
+the answer on; engram stores the (query-embedding → used-chunk) association, and a
+later *similar* query injects those chunks into the rerank shortlist — a stateful
+signal a stateless retriever can't produce. **Honest scope:** this is an
+*operational* capability (cross-session memory, personalization, recurring-query
+recall/cost on *your* traffic), **not** a benchmark-quality lever — on standard IR
+benchmarks with a strong embedder it shows no measurable nDCG lift, because base
+retrieval already finds the relevant chunk (measured in
+[bench/RESULTS.md §3](bench/RESULTS.md)). engramdb backend.
 
 ### Prove it on your own corpus (`POST /eval`)
 
@@ -466,7 +490,7 @@ a default that reproduces the pipeline above, so nothing moves until you opt in.
 | **Router** | auto-pick a preset per query (`heuristic` built in), or off | register on `ROUTERS`, set `ROUTER_STRATEGY` |
 | **Reranker** | a different cross-encoder/provider, the cheap `colbert` late-interaction option, or off | register on `RERANKERS`, set `RERANKER_STRATEGY` / `RERANKER_ENABLED` |
 | **Graph profile** | project domain entity nodes/relations into PageRank | `GRAPH_PROFILE` JSON |
-| **Store backend** | Neo4j (default) or PostgreSQL + pgvector | register on `STORES`, set `STORE_BACKEND` |
+| **Store backend** | Neo4j (default), PostgreSQL + pgvector, or the embedded **engramdb** (in-process, fastest, b1 32× memory) | register on `STORES`, set `STORE_BACKEND` |
 
 Two capabilities make *special graphs* (not just documents) first-class:
 
@@ -502,33 +526,33 @@ against the live Neo4j and the live pgvector store, each skipping itself
 automatically when its database is down. Pass pytest args as usual:
 `docker compose run --rm tests pytest -k scoring`.
 
-## Benchmarks 📊
+## Benchmarks
 
-engram is benchmarked **head-to-head** against the standard RAG retrieval
-strategies — *same datasets, same embedding model, same reranker, same metrics;
-only the architecture changes* — so any difference is the **architecture**, not
-the models. (Running LightRAG/HippoRAG directly would confound the result with
-their different embedders/LLMs.) Full methodology + every table:
-[bench/RESULTS.md](bench/RESULTS.md).
+**The honest headline: engram matches SOTA retrieval quality, and wins on
+performance.** On the production stack (**BGE-M3** + **bge-reranker-v2-m3**, RTX
+4080), engram is **statistically tied** with a well-tuned hybrid(dense+BM25)+rerank
+baseline *and* the Neo4j backend — bootstrap CIs + paired sign tests, the
+difference is within noise. It beats naive single-vector RAG and BM25 clearly. The
+**win is performance**: the embedded `engramdb` backend delivers that same quality
+as the fastest backend at every scale, **~2× faster multi-hop** than Neo4j+PPR, at
+**~32× less vector memory** (b1) — in a single in-process library, no server.
 
-On engram's production stack (**BGE-M3** + **bge-reranker-v2-m3**, on an RTX
-4080), engram clearly beats naive single-vector RAG and BM25, and is
-**statistically tied** with the standard dense→rerank *and* a strong
-hybrid(dense+BM25)+rerank baseline (point estimate slightly ahead, but the paired
-difference is within noise — 95%CI straddles 0, sign-p > 0.05). See the honest
-breakdown below.
+Methodology: same datasets / embedder / reranker / metrics across every system, so
+the comparison isolates the pipeline, not the models. Full study + every table:
+[bench/RESULTS.md](bench/RESULTS.md), [docs/engram-db.md](docs/engram-db.md).
 
-**BEIR SciFact** (5,183 docs · 300 queries)
+**BEIR SciFact** (5,183 docs · 300 queries) — point estimates; the engram row is
+**within noise** of dense+rerank (see below):
 
 | system | nDCG@10 | Recall@10 | MAP |
 |---|---|---|---|
 | BM25 | 0.652 | 0.774 | 0.613 |
 | dense — *naive vector RAG* | 0.642 | 0.775 | 0.599 |
 | dense + rerank — *standard 2-stage* | 0.725 | 0.825 | 0.693 |
-| **engram** | **0.741** | **0.856** | **0.704** |
+| hybrid (dense+BM25) + rerank — *strong control* | 0.736 | 0.846 | 0.701 |
+| engram | 0.739 | 0.853 | 0.703 |
 
-engram edges `dense+rerank` on these point estimates (identical models). **But be
-honest about what that gap is** (rigorous re-run with bootstrap CIs + paired sign
+**Be honest about what that gap is** (rigorous re-run with bootstrap CIs + paired sign
 tests + a `hybrid(dense+BM25)+rerank` control — [RESULTS.md](bench/RESULTS.md),
 [docs/engram-db.md](docs/engram-db.md)): on **single-hop** BEIR the `engram −
 dense+rerank` delta is **not statistically significant** (95%CI straddles 0,
@@ -590,7 +614,8 @@ docker compose -f bench/docker-compose.yml -f bench/docker-compose.gpu.yml run -
   sequence/keyword siblings, proximity via decay instead of GDS PageRank).
 - **Bring your own models *and* store.** Embeddings, LLM and reranker are plain
   OpenAI-compatible HTTP endpoints; the backing store is `STORE_BACKEND`
-  (`neo4j` or `pgvector`). Local, on-prem, cloud: your call.
+  (`neo4j`, `pgvector`, or the embedded `engramdb` — no server). Local, on-prem,
+  cloud: your call.
 - **Degrade, never break.** LLM down? HyDE skips itself. GDS plugin missing (or
   pgvector backend)? Proximity falls back to decay. Reranker down? Results fall
   back to the fused score. Embedding endpoint down? Search degrades to
@@ -600,8 +625,9 @@ docker compose -f bench/docker-compose.yml -f bench/docker-compose.gpu.yml run -
   pool, how far it sits in the graph, and what every pipeline stage thought
   of it.
 
-**Stack:** Python 3.12 · FastAPI · Neo4j 5.26 + GDS 2.13 *or* PostgreSQL +
-pgvector · httpx · numpy · BGE-M3 embeddings · BGE-reranker-v2-m3. Swap any of them.
+**Stack:** Python 3.12 · FastAPI · embedded **engramdb** *or* Neo4j 5.26 + GDS 2.13
+*or* PostgreSQL + pgvector · httpx · numpy · usearch · BGE-M3 embeddings ·
+BGE-reranker-v2-m3. Swap any of them.
 
 ---
 

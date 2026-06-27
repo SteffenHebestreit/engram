@@ -5,6 +5,15 @@ All notable changes to **engram**. Format loosely follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-27
+
+Positioning correction + the embedded backend's headline features. Honest framing:
+engram delivers **parity** retrieval quality (CI/significance-tested vs a tuned
+hybrid+rerank baseline) and wins on **performance** — the embedded `engramdb`
+backend is fastest at every scale, runs in-process (no server), and offers 32×
+vector-memory headroom (b1) — plus an agent-memory/operational layer. No
+quality-superiority claims (see the rigorous re-benchmark + adversarial review).
+
 ### Added
 - **Agent-memory write-path — the learning side of `/feedback` (opt-in,
   `MEMORY_BOOST_ENABLED`).** Until now feedback was only *recorded*; this implements

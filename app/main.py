@@ -4,6 +4,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Query
 
 from .config import get_settings
+from .embeddings import embed_text
 from .ingest import ingest_document
 from .community import build_communities, search_communities
 from .models import (
@@ -50,7 +51,7 @@ async def lifespan(app: FastAPI):
     await app.state.store.close()
 
 
-app = FastAPI(title="engram", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="engram", version="0.5.0", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -219,11 +220,25 @@ async def eval_endpoint(req: EvalRequest):
 @app.post("/feedback", response_model=FeedbackResponse)
 async def feedback_endpoint(req: FeedbackRequest):
     """Record which chunks an agent actually grounded its answer on (implicit-
-    relevance feedback). engram persists the (query → used-chunk) positives so an
-    offline job can mine hard negatives + tune fusion weights — the agent-in-the-
-    loop learning signal a stateless retriever can't capture. See app/store.py."""
+    relevance feedback). engram persists the (query → used-chunk) positives. When
+    the agent-memory boost is enabled (`MEMORY_BOOST_ENABLED`), the query is also
+    embedded and stored, so a later *similar* query can recall these chunks
+    (`memory_candidates`) — the learning side of the write-path that a stateless
+    retriever can't capture. See app/store.py / app/search.py."""
+    settings = get_settings()
+    query_embedding = None
+    if settings.memory_boost_enabled:
+        # embed the query the SAME way search does (q-instruction prefix), so the
+        # stored feedback vector is comparable to future query embeddings. Degrade
+        # gracefully — record the feedback even if the embedding endpoint is down.
+        try:
+            query_embedding = await embed_text(
+                app.state.http, settings.query_instruction + req.query
+            )
+        except Exception:
+            query_embedding = None
     recorded = await app.state.store.record_feedback(
-        req.query, req.used_chunk_ids, req.query_id
+        req.query, req.used_chunk_ids, req.query_id, query_embedding=query_embedding
     )
     return FeedbackResponse(recorded=recorded)
 
