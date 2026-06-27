@@ -18,6 +18,7 @@ from .models import SearchResult
 from .pipeline import get_expander, get_fusion, get_proximity
 from .presets import apply_preset
 from .rerank import get_reranker
+from .routing import get_router
 from .scoring import autocut, median_proximity_scores, mmr_select, sparse_scores
 
 log = logging.getLogger(__name__)
@@ -49,9 +50,16 @@ async def search(
     """
     started = time.perf_counter()
     base = get_settings()
-    # resolve a named preset (env default or tuning["preset"]) into concrete
+    # adaptive routing: when enabled and the caller didn't name its own preset,
+    # a router classifies the query and picks the preset (pipeline shape). An
+    # explicit per-request preset always wins, so routing never overrides it.
+    route = None
+    default_preset = base.search_preset
+    if base.router_strategy and not (tuning and tuning.get("preset")):
+        route, default_preset = get_router(base.router_strategy)(query, base)
+    # resolve the preset (router/env default or tuning["preset"]) into concrete
     # overrides, with explicit per-request fields winning, then validate
-    settings = base.tuned(apply_preset(tuning, base.search_preset))
+    settings = base.tuned(apply_preset(tuning, default_preset))
     final_top_k = top_k or settings.final_top_k
 
     # the lexical channel only needs the raw query text, so it runs while the
@@ -204,8 +212,9 @@ async def search(
 
     # one structured diagnostics line per search (visible at LOG_LEVEL=DEBUG)
     log.debug(
-        "search done: query_words=%d embed_fallback=%s candidates=%d "
+        "search done: route=%s query_words=%d embed_fallback=%s candidates=%d "
         "shortlist=%d rerank_fallback=%s results=%d elapsed_ms=%.1f",
+        route or "-",
         len(query.split()),
         query_emb is None,
         len(candidates),
