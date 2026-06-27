@@ -152,10 +152,35 @@ The HotpotQA findings **hold on the harder set**, de-caveated:
   positive, not a game-changer, for passage-retrieval multi-hop.
 
 **Remaining quality gap (one mechanism still dormant):** all benchmarks so far are
-single-chunk passages, so `NEXT_CHUNK` (sequence) expansion never fired — engram's
-chunking thesis (graph recovers cross-chunk context, so no overlap needed) is
-untested. That needs a long/chunked-document corpus and is a *separate* claim from
-the store/PPR decision, which is now settled.
+single-chunk passages, so `NEXT_CHUNK` (sequence) expansion never fired.
+
+### Chunking ablation (NEXT_CHUNK) — SciFact, forced multi-chunk
+
+To exercise `NEXT_CHUNK`, SciFact abstracts were force-split (`CHUNK_TARGET_CHARS=400`,
+`METADATA_EXTRACTOR=none` so the *only* expansion is the sequence chain). pgvector,
+100 queries, doc-level scoring:
+
+| config | nDCG@10 | Recall@10 | Recall@100 |
+|---|---|---|---|
+| A — small chunks + NEXT_CHUNK (hops=2) | 0.7252 | 0.8560 | 0.8880 |
+| B — small chunks + no expansion (seed=0) | 0.7252 | 0.8560 | 0.8880 |
+| C — large chunks (1800) baseline | **0.7498** | **0.8680** | 0.8680 |
+
+- **A == B to four decimals → NEXT_CHUNK is invisible to *document-level* retrieval,
+  by construction.** Sequence siblings are same-document chunks, and the doc is
+  already represented by its best chunk, so pulling neighbours in cannot change the
+  doc's rank. NEXT_CHUNK's real payoff is **context completeness** (handing the
+  agent the adjacent chunks around a hit) — measurable only with a *chunk-level*
+  answer-context metric, which standard IR benchmarks (doc-level qrels) don't have.
+  So the chunking thesis is neither confirmed nor refuted here — it needs the right
+  metric, not just the right corpus.
+- **Over-splitting a coherent short document hurts** (C beats A by +2.5 nDCG):
+  SciFact abstracts are ~one good chunk; fragmenting them degrades each fragment's
+  embedding. engram's larger default chunk size is well-chosen for abstract-length
+  content. (Small chunks do raise Recall@100 — more surface area — but rank top-k
+  worse.)
+
+This is a *separate* claim from the store/PPR decision, which is settled.
 
 ### Latency (profiler, synthetic corpus)
 
