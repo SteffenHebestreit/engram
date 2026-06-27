@@ -56,21 +56,38 @@ async def main():
     from datasets import load_dataset
     from sentence_transformers import CrossEncoder, SentenceTransformer
 
-    print(f"loading HotpotQA distractor dev (first {N})...", flush=True)
-    ds = load_dataset("hotpotqa/hotpot_qa", "distractor", split="validation")
-    ds = ds.select(range(min(N, len(ds))))
-
+    # dataset switch: HotpotQA (saturated) or MuSiQue (harder, multi-hop-by-design)
+    dataset = os.environ.get("BENCH_MULTIHOP_DATASET", "hotpot")
     corpus: dict[str, str] = {}
     questions: list[tuple[str, str, set]] = []
-    for ex in ds:
-        ctx = ex["context"]
-        for title, sents in zip(ctx["title"], ctx["sentences"]):
-            corpus.setdefault(title, " ".join(sents))
-        gold = set(ex["supporting_facts"]["title"])
-        questions.append((ex["id"], ex["question"], gold))
+    if dataset == "musique":
+        print(f"loading MuSiQue validation (first {N})...", flush=True)
+        ds = load_dataset("dgslibisey/MuSiQue", split="validation")
+        ds = ds.select(range(min(N, len(ds))))
+        for ex in ds:
+            gold = set()
+            for p in ex["paragraphs"]:
+                title = p["title"]
+                corpus.setdefault(title, p["paragraph_text"])
+                if p.get("is_supporting"):
+                    gold.add(title)
+            questions.append((ex["id"], ex["question"], gold))
+    else:
+        print(f"loading HotpotQA distractor dev (first {N})...", flush=True)
+        ds = load_dataset("hotpotqa/hotpot_qa", "distractor", split="validation")
+        ds = ds.select(range(min(N, len(ds))))
+        for ex in ds:
+            ctx = ex["context"]
+            for title, sents in zip(ctx["title"], ctx["sentences"]):
+                corpus.setdefault(title, " ".join(sents))
+            gold = set(ex["supporting_facts"]["title"])
+            questions.append((ex["id"], ex["question"], gold))
     doc_ids = list(corpus)
     doc_texts = [corpus[t] for t in doc_ids]
-    print(f"corpus={len(doc_ids)} passages, questions={len(questions)}", flush=True)
+    print(
+        f"dataset={dataset} corpus={len(doc_ids)} passages questions={len(questions)}",
+        flush=True,
+    )
 
     embed_model = os.environ.get("BENCH_EMBED_MODEL", "BAAI/bge-m3")
     rerank_model = os.environ.get("BENCH_RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
@@ -156,12 +173,15 @@ async def main():
     store = create_store(get_settings())
     await store.connect()
     await store.init_schema()
-    # start clean (the shared bench db may carry data from a prior run)
-    async with store._driver.session() as session:
-        await session.run(
-            "MATCH (n) WHERE n:Chunk OR n:Document OR n:Keyword OR n:Community "
-            "DETACH DELETE n"
-        )
+    # start clean (the shared bench db may carry data from a prior run). Neo4j is
+    # wiped via the driver; other backends (pgvector) are run on a fresh DB
+    # instead, so this is a neo4j-only convenience, guarded for backend-agnostic use.
+    if getattr(store, "_driver", None) is not None:
+        async with store._driver.session() as session:
+            await session.run(
+                "MATCH (n) WHERE n:Chunk OR n:Document OR n:Keyword OR n:Community "
+                "DETACH DELETE n"
+            )
 
     t0 = time.perf_counter()
     for i, did in enumerate(doc_ids):
