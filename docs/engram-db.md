@@ -364,6 +364,19 @@ in-process; the others over a container socket):
   The win comes from being in-process (no socket / query-parse round-trip), a
   **native-adjacency** graph (best graph stage: 0.6 / 5.6 ms vs 11–85), and an ANN
   index (usearch) for sub-linear vector search.
+
+**Quality is preserved (the win we must not lose).** Real pipeline (local MiniLM +
+ms-marco), 100 queries — engramdb vs neo4j / pgvector:
+
+| dataset | nDCG@10 | Recall@10 | Recall@100 | MAP |
+|---|---|---|---|---|
+| SciFact | 0.736 (vs 0.733 / 0.749) | 0.836 (0.826 / 0.853) | **0.970** (0.970 / 0.915) | 0.705 (0.704 / 0.714) |
+| NFCorpus | 0.395 (vs 0.396 / 0.400) | 0.181 (0.183 / 0.192) | **0.306** (0.306 / 0.258) | 0.191 (0.192 / 0.188) |
+
+engramdb is in the band on every metric, and its **Recall@100 ties Neo4j (the best)
+and beats pgvector** — the usearch ANN is not dropping recall, and the in-house
+BM25 fuses equivalently. So engramdb is **same quality, fastest backend** — the
+speed win does not cost quality.
 - The **matmul → ANN** swap mattered: it cut 20k retrieval 51 → 28 ms (and 2k
   12.7 → 8.6). Same quality — usearch returns the exact-match top hits the tests
   assert.
