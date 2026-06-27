@@ -128,12 +128,34 @@ Two decision-changing results:
    capturing most of the graph-expansion benefit through its SQL keyword-sibling
    join — no GDS required.
 
-**Caveat (important):** HotpotQA + MiniLM is a *saturated* setup — dense already
-hits Recall@10 0.846, so most gold is directly retrieved and graph/proximity have
-little headroom. The honest test of whether PPR ever earns its cost is a
-**non-saturated** multi-hop set (2WikiMultiHopQA / MuSiQue) and/or **chunked**
-documents (where `NEXT_CHUNK` engages) — not yet run. Treat "drop PPR" as
-*strongly indicated, pending that confirmation*.
+### Quality — MuSiQue (non-saturated multi-hop, the validation set)
+
+`bench/multihop.py` with `BENCH_MULTIHOP_DATASET=musique` (200 questions, 2882
+passages, MiniLM). MuSiQue is built to defeat single-hop shortcuts — dense+rerank
+hits only Recall@10 0.65 here (vs 0.91 on HotpotQA), so graph/PPR have real
+headroom to show value:
+
+| system | Recall@2 | Recall@5 | Recall@10 |
+|---|---|---|---|
+| dense+rerank | 0.4650 | 0.5925 | 0.6525 |
+| engram — Neo4j + **PPR** | 0.4775 | 0.5950 | 0.6575 |
+| engram — Neo4j + **decay** | 0.4775 | **0.5975** | **0.6600** |
+| engram — pgvector + decay | 0.4725 | 0.5925 | **0.6675** |
+
+The HotpotQA findings **hold on the harder set**, de-caveated:
+- **PPR still adds nothing** — decay *equals or edges* PPR (R@5 0.5975 vs 0.5950,
+  R@10 0.6600 vs 0.6575). Confirmed on a saturated *and* a non-saturated multi-hop
+  benchmark: Personalized PageRank does not earn its cost.
+- **pgvector ties Neo4j** (and wins Recall@10 0.6675 vs 0.6600), at ~2× the ingest
+  speed (20s vs 49s).
+- The graph *expansion* adds only ~+1 pt over dense+rerank even here — a minor
+  positive, not a game-changer, for passage-retrieval multi-hop.
+
+**Remaining quality gap (one mechanism still dormant):** all benchmarks so far are
+single-chunk passages, so `NEXT_CHUNK` (sequence) expansion never fired — engram's
+chunking thesis (graph recovers cross-chunk context, so no overlap needed) is
+untested. That needs a long/chunked-document corpus and is a *separate* claim from
+the store/PPR decision, which is now settled.
 
 ### Latency (profiler, synthetic corpus)
 
@@ -182,11 +204,12 @@ for GDS PageRank until a corpus proves it helps).
 0.915 — or just raise pgvector's `ef_search`). These are real but
 workload-specific, not the default.
 
-**Caveat:** measured on MiniLM + *saturated* benchmarks. Confirm on a
-non-saturated multi-hop set (2Wiki/MuSiQue) and chunked docs (where `NEXT_CHUNK`
-engages) before making "pgvector default / drop PPR" permanent — that's the one
-remaining quality gap. Also: communities/entity-graph value is unmeasured (no
-bench yet).
+**Confidence:** the "drop PPR" call is now confirmed on **both** a saturated
+(HotpotQA) and a non-saturated (MuSiQue) multi-hop benchmark — not a saturation
+artifact. Open (smaller) gaps: the `NEXT_CHUNK` chunking thesis (needs a
+long-document corpus; a *separate* claim), communities/entity-graph quality (no
+bench yet), and absolute numbers under the production embedder (BGE-M3, gated on
+GPU) — none of which is expected to change the cross-backend *deltas*.
 
 ## Status
 
