@@ -227,6 +227,27 @@ projected graph bridges unstructured text and structured rules.
 
 ---
 
+## Recency (temporal decay)
+
+`RECENCY_ENABLED=true` blends an exponential **recency** factor into the final
+ranking — the agent-*memory* signal that pure-relevance retrieval ignores. Among
+similarly relevant results, newer ones rank higher; what Mem0/Zep/Letta do for
+memory and most RAG stacks don't.
+
+- Applied **after reranking**, so it's orthogonal to relevance — the
+  cross-encoder can't overwrite it. The final ordering key is
+  `(1 - RECENCY_WEIGHT) · normalized_relevance + RECENCY_WEIGHT · recency`.
+- `recency = 0.5 ^ (document_age / RECENCY_HALF_LIFE_DAYS)` — 1.0 for a
+  just-ingested document, 0.5 at one half-life. Re-ingesting a document refreshes
+  its age (its `created_at` resets).
+- **No schema or ingest change**: the age is read once per search over the
+  candidate pool (reusing each document's `created_at`), like the sparse /
+  near-duplicate reads — the hot retrieval queries are untouched.
+- Tunable per request (`recency_enabled` / `recency_weight` /
+  `recency_half_life_days`); each result carries its `recency_score`.
+
+---
+
 ## Per-request tuning
 
 `POST /search` accepts a `tuning` object overriding search-shaping settings for

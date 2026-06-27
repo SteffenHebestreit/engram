@@ -5,7 +5,17 @@ All notable changes to **engram**. Format loosely follows
 
 ## [Unreleased]
 
-Three feature branches built and tested, awaiting merge:
+Feature branches built and tested, awaiting merge:
+
+- **Recency / temporal decay** (`RECENCY_ENABLED`, opt-in) — the agent-*memory*
+  signal: after reranking, blend an exponential recency factor on each candidate's
+  document age into the final ordering, so among similarly-relevant results the
+  newer ones rank higher (what Mem0/Zep/Letta do and pure-relevance RAG ignores).
+  Applied **post-rerank**, so it's an orthogonal signal the cross-encoder can't
+  overwrite. No schema/ingest change — reuses document `created_at` via a batched
+  read (like the sparse/near-dup reads), so the hot retrieval queries are
+  untouched. `RECENCY_WEIGHT` / `RECENCY_HALF_LIFE_DAYS` tune it; `SearchResult`
+  gains `recency_score`. Branch `recency-scoring`.
 
 - **Reranker sidecar** (`deploy/reranker`) — serves Qwen3-Reranker in engram's
   reranker wire format, since TEI can't serve its causal-LM format. The measured
