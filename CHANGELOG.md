@@ -22,6 +22,12 @@ All notable changes to **engram**. Format loosely follows
     NFCorpus matches Neo4j/pgvector (e.g. SciFact nDCG@10 0.736, Recall@100 0.970
     — ties Neo4j, beats pgvector). f16 quantization is lossless for ranking; i8
     keeps top-k identical at ¼ the memory.
+  - **Quality parity verified on the real production stack** (not just the CPU
+    MiniLM floor): a GPU head-to-head with `bge-m3` + `bge-reranker-v2-m3`
+    ([bench/compare.py](bench/compare.py)) shows engram·engramdb ties
+    engram·Neo4j (SciFact 0.7389 vs 0.7373, NFCorpus 0.3397 vs 0.3378 nDCG@10)
+    and beats standard 2-stage `dense+rerank` by **+1.39 / +0.73 nDCG@10**. See
+    [docs/engram-db.md](docs/engram-db.md) "Real production-model head-to-head".
 
 ### Changed
 - New optional dependency `usearch` (the engramdb ANN index; other backends

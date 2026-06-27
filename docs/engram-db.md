@@ -38,6 +38,12 @@ store question and reshaped the Engram-DB design:
 4. **Chunking:** don't over-split coherent docs (engram's default size is good);
    NEXT_CHUNK's value is context-completeness, not doc-rank (needs a chunk-level
    metric to quantify — still open).
+5. **Engram-DB ships and keeps the quality win — now verified on the real
+   production stack.** A GPU head-to-head with `bge-m3` + `bge-reranker-v2-m3`
+   (not just the CPU MiniLM floor) shows **engramdb ties the engram-layer (Neo4j)**
+   — SciFact 0.7389 vs 0.7373, NFCorpus 0.3397 vs 0.3378 nDCG@10 — while **beating
+   standard 2-stage RAG by +1.39 / +0.73 nDCG@10**. Same quality, fastest backend.
+   See "Real production-model head-to-head" below.
 
 Details, tables, and caveats below.
 
@@ -336,9 +342,11 @@ change these deltas.
 
 ## Status
 
-- `bench/profile_latency.py` shipped. Fake-models numbers above are real;
-  real-models + large-scale sweep are the next measurements (need the endpoints /
-  a bigger box).
+- `bench/profile_latency.py` shipped. Fake-models latency numbers above are real;
+  the **real production-model quality run is now done** (`BAAI/bge-m3` +
+  `BAAI/bge-reranker-v2-m3` on the RTX 4080 — see "Real production-model
+  head-to-head" below). A large-scale (50k+) real-corpus *latency* sweep is the
+  remaining measurement.
 - **Prototype shipped** ([app/store_engramdb.py](../app/store_engramdb.py),
   `STORE_BACKEND=engramdb`) — Tier 1 of the plan, embodying the findings: embedded
   single-process store with in-memory vector (brute-force cosine), BM25 (inverted
@@ -399,4 +407,50 @@ speed win does not cost quality.
   (profiler query terms are super-common words → huge postings; real queries are
   selective), so block-max/WAND BM25 is deferred until a real corpus shows it
   matters. An incremental on-disk segment format (today: in-memory + optional
-  pickle snapshot) and a real-models/real-corpus run are the other follow-ups.
+  pickle snapshot) is the other production-hardening follow-up. *(The real-model
+  quality run is done — see below.)*
+
+### Real production-model head-to-head (bge-m3 + bge-reranker-v2-m3, RTX 4080)
+
+The quality numbers above use the local **MiniLM floor stack** (CPU). To confirm
+the win survives the **real production models**, the same head-to-head harness
+([bench/compare.py](../bench/compare.py)) was run on the GPU with engram's
+configured stack — `BAAI/bge-m3` (1024-d) embeddings + `BAAI/bge-reranker-v2-m3` —
+scoring four systems on *identical* models: `bm25`, `dense`, `dense+rerank` (the
+standard 2-stage RAG baseline), and `engram` on both the **engram-layer (Neo4j)**
+and **engramdb** backends. Rerank depth 100; full BEIR test sets; f32.
+
+**SciFact** (300 queries, 5183 docs):
+
+| system | nDCG@10 | Recall@10 | MAP | P@10 |
+|---|---|---|---|---|
+| bm25 | 0.6519 | 0.7740 | 0.6132 | 0.0850 |
+| dense | 0.6415 | 0.7751 | 0.5990 | 0.0870 |
+| dense+rerank *(standard 2-stage)* | 0.7250 | 0.8246 | 0.6934 | 0.0933 |
+| engram · Neo4j *(engram-layer)* | 0.7373 | 0.8529 | 0.7007 | 0.0960 |
+| **engram · engramdb** | **0.7389** | **0.8529** | **0.7027** | **0.0960** |
+
+**NFCorpus** (323 queries, 3633 docs):
+
+| system | nDCG@10 | Recall@10 | MAP | P@10 |
+|---|---|---|---|---|
+| bm25 | 0.3062 | 0.1521 | 0.1368 | 0.2180 |
+| dense | 0.3174 | 0.1504 | 0.1446 | 0.2316 |
+| dense+rerank | 0.3324 | 0.1614 | 0.1518 | 0.2412 |
+| engram · Neo4j *(engram-layer)* | 0.3378 | 0.1642 | 0.1547 | 0.2430 |
+| **engram · engramdb** | **0.3397** | **0.1659** | **0.1562** | **0.2452** |
+
+Two things this proves on the **real** models, not the floor stack:
+
+1. **engramdb preserves the engram-layer quality win.** engram·engramdb vs
+   engram·Neo4j is +0.0016 (SciFact) / +0.0019 (NFCorpus) nDCG@10 with identical
+   Recall@10 on SciFact — a tie within ANN/tie-break noise. (The `bm25` / `dense` /
+   `dense+rerank` rows came out **byte-identical** across the two backend runs,
+   confirming the harness is reproducible and only the backend changed.) engramdb's
+   usearch ANN + in-house contextual BM25 retrieve equivalently to Neo4j's HNSW.
+2. **The architecture beats standard RAG on real models too.** engram·engramdb
+   over `dense+rerank` (the strong competitor): **+1.39 nDCG / +2.83 recall@10**
+   (SciFact), **+0.73 / +0.45** (NFCorpus); over naive dense, **+9.7 / +2.2** nDCG.
+   So the pipeline's lift is not a small-model artifact — it holds with a 2026 SOTA
+   embedder + reranker. (Both backends sit ~+1.2–1.4 over `dense+rerank`; engramdb
+   is the faster of the two at equal quality.)

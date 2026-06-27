@@ -31,6 +31,8 @@ DATA_DIR = Path("/data")
 BEIR_URL = "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/{name}.zip"
 DATASETS = os.environ.get("BENCH_DATASETS", "scifact,nfcorpus").split(",")
 RERANK_DEPTH = int(os.environ.get("BENCH_RERANK_DEPTH", "50"))
+# optional cap on test queries (0 = all); keeps heavy CPU model runs tractable
+MAX_QUERIES = int(os.environ.get("BENCH_MAX_QUERIES", "0"))
 TOP_K = 100
 
 
@@ -224,6 +226,8 @@ async def main():
         queries = {o["_id"]: o["text"] for o in load_jsonl(d / "queries.jsonl")}
         qrels = load_qrels(d / "qrels" / "test.tsv")
         qids = [q for q in qrels if q in queries]
+        if MAX_QUERIES > 0:
+            qids = qids[:MAX_QUERIES]
         doc_ids = list(corpus)
         doc_texts = [
             f"{corpus[i].get('title', '')}\n{corpus[i].get('text', '')}".strip()
@@ -363,12 +367,19 @@ def _bm25(doc_texts):
 
 
 async def _wipe(store):
-    # clear chunks/documents/keywords/communities between datasets (keep indexes)
-    async with store._driver.session() as session:
-        await session.run(
-            "MATCH (n) WHERE n:Chunk OR n:Document OR n:Keyword OR n:Community "
-            "DETACH DELETE n"
-        )
+    # clear documents between datasets, backend-agnostic. Fast path for neo4j
+    # (one Cypher DETACH DELETE); otherwise drop via the Store protocol so the
+    # in-process engramdb backend (no _driver) is wiped the same way.
+    driver = getattr(store, "_driver", None)
+    if driver is not None:
+        async with driver.session() as session:
+            await session.run(
+                "MATCH (n) WHERE n:Chunk OR n:Document OR n:Keyword OR n:Community "
+                "DETACH DELETE n"
+            )
+        return
+    for doc in await store.list_documents():
+        await store.delete_document(doc["id"])
 
 
 if __name__ == "__main__":
