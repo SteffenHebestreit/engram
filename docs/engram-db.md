@@ -74,6 +74,36 @@ batchable — so Engram-DB's win shows up in QPS/$ and at scale, not just p50.
 
 ## Backend comparison (Engram-Layer: Neo4j vs pgvector) — which to use now
 
+### Quality (real pipeline, BEIR SciFact — no graph exercised)
+
+`bench/run_benchmark.py`, real engram pipeline on local CPU models (MiniLM-384 +
+ms-marco cross-encoder), full 5183-doc corpus, 100 test queries, content + BM25
+channels (SciFact is single-chunk with no keywords → no graph, so this isolates
+the **vector + lexical + rerank** path):
+
+| metric | Neo4j | pgvector |
+|---|---|---|
+| nDCG@10 | 0.7330 | **0.7494** |
+| Recall@10 | 0.8260 | **0.8530** |
+| Recall@100 | **0.9700** | 0.9150 |
+| MAP | 0.7042 | **0.7141** |
+| ingest / search time | 218s / 205s | **136s / 88s** |
+
+- **On standard (non-graph) retrieval, pgvector matches or slightly *beats* Neo4j
+  on top-k quality** (nDCG@10 +1.6, Recall@10 +2.7) **and is ~2× faster** to
+  ingest and query. So pgvector isn't merely "lighter" — for non-graph workloads
+  it's the better pick on both quality and speed.
+- **But Neo4j has higher Recall@100** (0.970 vs 0.915): its vector index recalls
+  ~5.5 pts more gold deep in the pool. pgvector's HNSW misses some deep candidates
+  (a tunable `ef_search` issue) — they can never be reranked into the top-k. It
+  didn't hurt top-10 here, but on a corpus where deep recall matters, raise
+  pgvector's `ef_search` (cf. the per-tenant `ef_search` bump already shipped).
+- **The whole Neo4j case therefore rests on the graph** (PPR proximity,
+  communities, entity graph) — which SciFact does not exercise. Whether that earns
+  Neo4j's 2× latency is the multi-hop question (below).
+
+### Latency (profiler, synthetic corpus)
+
 Same profiler, same synthetic corpus, `--fake-models`, mean ms/query:
 
 | metric | Neo4j 300 | pgvector 300 | Neo4j 2000 | pgvector 2000 |
