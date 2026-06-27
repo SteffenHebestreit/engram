@@ -126,6 +126,42 @@ async def test_tenant_isolation(monkeypatch):
     await store.close()
 
 
+async def test_b1_quantization_preserves_ranking():
+    """b1 (binary) quantization + 2-stage rescore (k*16 hamming shortlist → exact-
+    cosine rescore) recovers the full-precision top-k on realistic retrieval data —
+    relevant docs sit at *well-separated* high cosine (tight clusters), as real
+    embeddings do, not the near-orthogonal noise where any 1-bit code is ambiguous.
+    n (200) ≫ shortlist (80) so the hamming filter genuinely engages."""
+    rng = np.random.RandomState(0)
+    n, k, clusters = 200, 5, 10
+    vecs = rng.normal(size=(n, DIM)).astype(np.float32)
+    # first clusters*k docs form `clusters` tight, well-separated groups of k;
+    # the rest are background. A query near a cluster has exactly that cluster as
+    # its true top-k — the realistic "relevant set" shape.
+    for c in range(clusters):
+        center = rng.normal(size=DIM)
+        for j in range(k):
+            vecs[c * k + j] = center + 0.05 * rng.normal(size=DIM)
+    vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
+    chunks = [
+        {"id": f"c{i}", "seq": i, "text": f"c{i}", "summary": "", "keywords": [],
+         "embeddings": {"content_embedding": vecs[i].tolist()}}
+        for i in range(n)
+    ]
+    store = EngramDBStore(quantization="b1")
+    await store.connect()
+    await store.init_schema()
+    await store.save_document("d", "t", ["s"], chunks)
+    content = resolve_vector_channels(SETTINGS)[0]
+    for c in range(clusters):
+        qv = vecs[c * k] + 0.05 * rng.normal(size=DIM).astype(np.float32)
+        qv /= np.linalg.norm(qv)
+        truth = {int(i) for i in np.argsort(-(vecs @ qv))[:k]}
+        got = {int(h["id"][1:]) for h in await store.vector_search(content, qv.tolist(), k)}
+        assert got == truth == set(range(c * k, c * k + k)), (c, sorted(got), sorted(truth))
+    await store.close()
+
+
 async def test_recency_feedback_and_persistence(monkeypatch, tmp_path):
     path = str(tmp_path / "engramdb.pkl")
     store = EngramDBStore(path)

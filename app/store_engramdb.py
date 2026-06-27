@@ -4,9 +4,10 @@ One process, no server, no GDS. Implements the engram `Store` protocol with only
 the parts the evaluation ([docs/engram-db.md](../docs/engram-db.md)) showed pull
 their weight, and leaves out the overhead that didn't:
 
-  * dense vector ANN  → cosine over an in-memory matrix per channel (brute force
-                        in this prototype; usearch/HNSW + int8/binary quant is the
-                        production swap)
+  * dense vector ANN  → usearch index per channel (sub-linear), with optional
+                        f16/i8 quantization; b1 (binary) uses a hamming shortlist
+                        + exact-cosine rescore. Falls back to an exact matmul when
+                        usearch is absent.
   * lexical (BM25)    → an in-memory inverted index over text + summary + context
                         (so **contextual BM25** comes for free)
   * graph             → **native in-memory adjacency**: NEXT_CHUNK (doc → ordered
@@ -56,6 +57,11 @@ if TYPE_CHECKING:
 _TOKEN_RE = re.compile(r"\w+")
 _BM25_K1 = 1.5
 _BM25_B = 0.75
+# popcount per byte value, for b1 (binary-quantized) hamming over packed uint8
+_POPCOUNT = np.array([bin(i).count("1") for i in range(256)], dtype=np.uint16)
+# b1 shortlist oversampling: take k*this by hamming, then exact-cosine rescore.
+# 16× recovers full-precision ranking on the tested corpora (see docs/engram-db.md).
+_B1_RESCORE_MULT = 16
 
 
 def _tokenize(text: str) -> list[str]:
@@ -184,8 +190,19 @@ class EngramDBStore:
                 "ids": [cid for cid, _, _ in rows],
                 "tenants": np.asarray([t for _, _, t in rows], dtype=object),
             }
-            if _USEARCH:
-                # dtype quantizes the stored vectors (f16/i8/b1) for memory; the
+            if self._quant == "b1":
+                # binary quantization (1 bit/dim → 32× smaller than f32): a packed-
+                # bit **hamming shortlist** then an **exact-cosine rescore** of that
+                # shortlist (2-stage), so the final ranking is full-precision — the
+                # binary stage only has to keep the right docs in a generous
+                # shortlist, not order them. The f32 matrix is retained here for the
+                # rescore; in production it lives on disk (mmap) so only the bits
+                # (the 32× win) sit in RAM. usearch's own quantizers don't do this
+                # rescore, so we keep b1 on a self-contained code path.
+                entry["codes"] = np.packbits(mat > 0, axis=1)
+                entry["mat"] = mat
+            elif _USEARCH:
+                # dtype quantizes the stored vectors (f16/i8) for memory; the
                 # query stays f32 and usearch de-quantizes for scoring
                 idx = _UIndex(ndim=mat.shape[1], metric="cos", dtype=self._quant)
                 idx.add(np.arange(len(rows), dtype=np.int64), mat)
@@ -211,6 +228,30 @@ class EngramDBStore:
         q = np.asarray(embedding, dtype=np.float32)
         q = q / (float(np.linalg.norm(q)) or 1.0)
         n = len(ids)
+
+        if "codes" in entry:  # b1: hamming shortlist → exact-cosine rescore
+            codes = entry["codes"]
+            qbits = np.packbits(q > 0)
+            ham = _POPCOUNT[np.bitwise_xor(codes, qbits)].sum(axis=1, dtype=np.int32)
+            if tenant_id is not None:
+                ham[tenants != tenant_id] = np.iinfo(np.int32).max  # drop from shortlist
+            shortlist = min(n, k * _B1_RESCORE_MULT)
+            cand = (
+                np.argpartition(ham, shortlist - 1)[:shortlist]
+                if shortlist < n
+                else np.arange(n)
+            )
+            mat = entry["mat"]
+            cscore = mat[cand] @ q  # exact cosine on the shortlist (rescore)
+            out = []
+            for si in np.argsort(-cscore):
+                i = int(cand[si])
+                if tenant_id is not None and tenants[i] != tenant_id:
+                    continue
+                out.append((ids[i], float(cscore[si])))
+                if len(out) >= k:
+                    break
+            return out
 
         if "index" in entry:
             count = min(n, k * 8 if tenant_id is not None else k)

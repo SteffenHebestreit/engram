@@ -389,8 +389,9 @@ speed win does not cost quality.
   12.7 → 8.6). Same quality — usearch returns the exact-match top hits the tests
   assert.
 - **Vector quantization (memory moat) — implemented + quality-verified.**
-  `ENGRAMDB_QUANTIZATION` = `f16` (default) / `f32` / `i8` / `b1` via the usearch
-  index `dtype`. SciFact, real pipeline:
+  `ENGRAMDB_QUANTIZATION` = `f16` (default) / `f32` / `i8` (usearch index `dtype`)
+  / `b1` (binary; a hamming shortlist + exact-cosine rescore — see below). Floor
+  stack (MiniLM), SciFact:
 
   | quant | nDCG@10 | Recall@10 | Recall@100 | memory |
   |---|---|---|---|---|
@@ -400,8 +401,25 @@ speed win does not cost quality.
 
   **f16 is lossless for ranking** (identical to f32) → free 2× memory, the default.
   **i8 keeps top-k identical** (only deep Recall@100 dips 1pt, still > pgvector's
-  0.915) at 4× savings — the opt-in moat for large/unbounded memory. So the memory
-  win does **not** cost the quality win.
+  0.915) at 4× savings. So the memory win does **not** cost the quality win.
+
+  **b1 (binary, 32× smaller) — verified on the real production stack.** 1 bit/dim
+  is too coarse to *rank* directly, so engramdb takes a `k`×16 **hamming shortlist**
+  then **rescores it with exact cosine** (2-stage) — the binary stage only has to
+  keep the right docs in a generous shortlist, the rescore restores precision. The
+  f32 rescore vectors are kept in RAM here; in production they live on disk (mmap)
+  so only the bits (the 32× win) sit in memory. On bge-m3 + bge-reranker-v2-m3,
+  SciFact, **b1 ties full precision to 3 decimals**:
+
+  | engramdb (bge-m3, SciFact) | nDCG@10 | Recall@10 | MAP | P@10 |
+  |---|---|---|---|---|
+  | f32 | 0.7389 | 0.8529 | 0.7027 | 0.0960 |
+  | **b1** (32× smaller) | **0.7390** | **0.8529** | **0.7030** | **0.0960** |
+
+  So the whole quant ladder — f16 (½×) / i8 (¼×) / **b1 (1/32×)** — is quality-safe;
+  b1 is the deep memory moat for very large / unbounded corpora. (Naive 1-bit
+  hamming *without* the rescore is not quality-safe — the rescore is what makes it
+  work; covered by `test_b1_quantization_preserves_ranking`.)
 - **Remaining (lower-value) levers:** the one scaling bottleneck left is the BM25
   fulltext (vector is now sub-ms), but that's mostly a *synthetic-query artifact*
   (profiler query terms are super-common words → huge postings; real queries are

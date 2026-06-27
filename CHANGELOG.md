@@ -5,6 +5,25 @@ All notable changes to **engram**. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+- **Engram-DB `b1` binary quantization (32× smaller vectors), quality-verified.**
+  `ENGRAMDB_QUANTIZATION=b1` packs each vector to 1 bit/dim and retrieves in two
+  stages — a `k`×16 **hamming shortlist** then an **exact-cosine rescore** of that
+  shortlist — so ranking stays full-precision. On the real production stack
+  (`bge-m3` + `bge-reranker-v2-m3`, SciFact) b1 **ties f32 to 3 decimals**
+  (nDCG@10 0.7390 vs 0.7389, identical Recall@10) at 1/32 the vector memory. The
+  earlier naive `dtype=b1` path (no rescore) was broken/quality-risky and is
+  replaced. Covered by `test_b1_quantization_preserves_ranking`. The deep tier of
+  the memory ladder: f16 (½×) / i8 (¼×) / **b1 (1/32×)**, all quality-safe.
+
+### Verified
+- **Engram-DB quality parity proven on the real production stack** (not just the
+  CPU MiniLM floor): GPU head-to-head with `bge-m3` + `bge-reranker-v2-m3`
+  ([bench/compare.py](bench/compare.py)) — engram·engramdb ties engram·Neo4j
+  (SciFact 0.7389 vs 0.7373, NFCorpus 0.3397 vs 0.3378 nDCG@10) and beats standard
+  2-stage `dense+rerank` by **+1.39 / +0.73 nDCG@10**. See
+  [docs/engram-db.md](docs/engram-db.md) "Real production-model head-to-head".
+
 ## [0.4.0] - 2026-06-27
 
 ### Added
@@ -21,13 +40,9 @@ All notable changes to **engram**. Format loosely follows
     52 / 67 and pgvector 28 / 131; ingest 10–25× faster. Quality on SciFact +
     NFCorpus matches Neo4j/pgvector (e.g. SciFact nDCG@10 0.736, Recall@100 0.970
     — ties Neo4j, beats pgvector). f16 quantization is lossless for ranking; i8
-    keeps top-k identical at ¼ the memory.
-  - **Quality parity verified on the real production stack** (not just the CPU
-    MiniLM floor): a GPU head-to-head with `bge-m3` + `bge-reranker-v2-m3`
-    ([bench/compare.py](bench/compare.py)) shows engram·engramdb ties
-    engram·Neo4j (SciFact 0.7389 vs 0.7373, NFCorpus 0.3397 vs 0.3378 nDCG@10)
-    and beats standard 2-stage `dense+rerank` by **+1.39 / +0.73 nDCG@10**. See
-    [docs/engram-db.md](docs/engram-db.md) "Real production-model head-to-head".
+    keeps top-k identical at ¼ the memory. *(Quality parity re-verified
+    post-release on the real `bge-m3` + `bge-reranker-v2-m3` stack — see
+    [Unreleased].)*
 
 ### Changed
 - New optional dependency `usearch` (the engramdb ANN index; other backends
