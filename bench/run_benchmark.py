@@ -14,12 +14,16 @@ Reports nDCG@10, Recall@10/100, MAP, P@10 — the standard SciFact metrics.
 
 import asyncio
 import json
+import os
 import time
 import urllib.request
 import zipfile
 from pathlib import Path
 
 DATA_DIR = Path("/data")
+# optional cap on the number of test queries evaluated (0 = all). Sampling keeps
+# CPU runs tractable; the mean nDCG/recall is a fine estimate over ~100 queries.
+MAX_QUERIES = int(os.environ.get("BENCH_MAX_QUERIES", "0"))
 SCIFACT_URL = "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.zip"
 
 
@@ -130,7 +134,13 @@ async def main():
     queries = {o["_id"]: o["text"] for o in load_jsonl(d / "queries.jsonl")}
     qrels = load_qrels(d / "qrels" / "test.tsv")
     test_qids = [q for q in qrels if q in queries]
-    print(f"corpus={len(corpus)} queries(test)={len(test_qids)}", flush=True)
+    if MAX_QUERIES > 0:
+        test_qids = test_qids[:MAX_QUERIES]
+    print(
+        f"corpus={len(corpus)} queries(test)={len(test_qids)} "
+        f"backend={os.environ.get('STORE_BACKEND', 'neo4j')}",
+        flush=True,
+    )
 
     install_local_models()
 

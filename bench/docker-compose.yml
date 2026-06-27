@@ -18,6 +18,19 @@ services:
       timeout: 5s
       retries: 15
 
+  # pgvector backend, for the cross-backend quality eval (STORE_BACKEND=pgvector)
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: engram
+      POSTGRES_PASSWORD: engram
+      POSTGRES_DB: engram
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U engram"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   runner:
     build:
       context: ..
@@ -25,13 +38,18 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     environment:
-      # point engram at the throwaway benchmark DB
+      # which backend to drive (override per run: -e STORE_BACKEND=pgvector)
+      STORE_BACKEND: "${STORE_BACKEND:-neo4j}"
+      # point engram at the throwaway benchmark DBs
       NEO4J_URI: bolt://db:7687
       NEO4J_PASSWORD: benchmark
-      # BGE-M3 is 1024-dim (engram's default embedder); no generative LLM, so
-      # metadata + HyDE off and the content channel is the only vector channel
-      EMBEDDING_DIM: "1024"
+      POSTGRES_DSN: postgresql://engram:engram@postgres:5432/engram
+      # local CPU embedder is all-MiniLM-L6-v2 (384-dim); override per run if you
+      # wire a different local model (the compose default below matches MiniLM)
+      EMBEDDING_DIM: "384"
       METADATA_EXTRACTOR: none
       SUMMARY_CHANNEL_ENABLED: "false"
       KEYWORDS_CHANNEL_ENABLED: "false"
