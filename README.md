@@ -553,12 +553,21 @@ BEIR nDCG.
   the robust default**; chase the reranker, not the embedder.
 
 On **multi-hop** retrieval (HotpotQA — recall@k of the *linked* supporting
-passages, the metric HippoRAG reports), engram **matches or beats** the strongest
-baseline. Its keyword-graph + PageRank expansion gives a *large* lift when the
-embedder is weak (with MiniLM: **+1.7 / +1.9 pts** Recall@5/@10 over dense+rerank,
-+11 pts Recall@5 over naive dense), and is neutral with a SOTA embedder (BGE-M3
-already retrieves the linked passage) — so the graph is a **robustness floor that
-never costs you**.
+passages, the metric HippoRAG reports), the graph is a **robustness floor, not a
+benchmark win** — and we've measured both ends honestly. With a *weak* embedder
+(MiniLM) the keyword-graph + PageRank expansion gives a large lift (**+1.7 / +1.9
+pts** Recall@5/@10 over dense+rerank, +11 pts over naive dense). But with the
+**production stack** (BGE-M3 + bge-reranker-v2-m3, n=500) the strong embedder
+*already* retrieves the linked passages (dense+rerank Recall@5 = 0.937), so
+engram's graph is **statistically tied** with dense+rerank *and* a hybrid+rerank
+control (ΔRecall@5 ≈ 0, paired sign-p > 0.4) — even with PPR on. It never costs
+you, and it helps exactly when the embedder is weak. Notably, the embedded
+**engramdb** backend (decay, *no* PPR) **matches neo4j's PPR** here (Recall@5
+0.937 vs 0.936) at ~2× the speed — so dropping PageRank for per-hop decay loses
+nothing on multi-hop. *(Takeaway: engram's value is robustness + the operational
+layer — memory write-path, multi-tenancy, recency, the agent-facing retrieval API
+— not a single-number nDCG/recall win over a well-tuned hybrid+rerank on public
+benchmarks with SOTA models.)*
 
 ```bash
 # reproduce on GPU (real stack); drop the gpu override for the CPU floor

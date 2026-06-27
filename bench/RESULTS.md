@@ -354,14 +354,23 @@ is Recall@k of the supporting passages (HippoRAG's metric). engram runs its
 shared-keyword graph; keyword-sibling expansion + GDS PageRank surface a
 bridge-linked passage. HotpotQA distractor dev, 500 questions, 4,937 passages.
 
-### Production stack (BGE-M3 + bge-reranker-v2-m3, GPU)
+### Production stack (BGE-M3 + bge-reranker-v2-m3, GPU, n=500)
 
 | system | Recall@2 | Recall@5 | Recall@10 |
 |---|---|---|---|
 | bm25 | 0.5070 | 0.6610 | 0.8160 |
 | dense (naive RAG) | 0.7000 | 0.8570 | 0.9320 |
-| dense+rerank | 0.8400 | **0.9370** | 0.9620 |
-| **engram** | **0.8420** | 0.9360 | **0.9640** |
+| dense+rerank | 0.8400 | 0.9370 | 0.9620 |
+| hybrid+rerank *(dense+BM25 RRF, no graph)* | 0.8430 | 0.9400 | 0.9650 |
+| engram · Neo4j (**PPR**) | 0.8410 | 0.9360 | 0.9640 |
+| **engram · engramdb (decay)** | 0.8410 | 0.9370 | 0.9670 |
+
+Paired per-question (sign test + bootstrap 95%CI): engram − dense+rerank
+ΔRecall@5 = 0.000, engram − hybrid+rerank = −0.003/−0.004 — **all n.s.** (p > 0.4,
+~490/500 queries tie). With a strong embedder the graph has nothing left to
+recover, so it neither helps nor hurts significantly. And **engramdb (decay, no
+PPR) ties Neo4j (PPR)** at ~2× speed (ingest 122 s vs 260 s) — dropping PageRank
+costs nothing on multi-hop.
 
 ### Floor stack (MiniLM + ms-marco, CPU)
 

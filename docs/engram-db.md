@@ -517,6 +517,37 @@ run-to-run noise floor (unseeded ANN + tie-breaks), which is exactly why the
 ~0.0016 backend delta is reported as a tie, and why a single-run "+0.0140 over
 dense+rerank" without a CI was not a safe basis for a headline.
 
+### Multi-hop on the real stack (HotpotQA, the graph's home turf)
+
+Single-hop BEIR can't exercise the graph (single-chunk docs). HotpotQA can — its
+answers span two linked passages. Real production stack (bge-m3 + bge-reranker-v2-m3,
+n=500), Recall@2 / @5 / @10:
+
+| system | R@2 | R@5 | R@10 |
+|---|---|---|---|
+| bm25 | 0.5070 | 0.6610 | 0.8160 |
+| dense | 0.7000 | 0.8570 | 0.9320 |
+| dense+rerank | 0.8400 | 0.9370 | 0.9620 |
+| hybrid+rerank | 0.8430 | 0.9400 | 0.9650 |
+| engram · Neo4j (**PPR**) | 0.8410 | 0.9360 | 0.9640 |
+| **engram · engramdb (decay)** | 0.8410 | 0.9370 | 0.9670 |
+
+Two conclusions, both honest:
+
+1. **The graph adds no *significant* multi-hop lift with a strong embedder.** Paired
+   per-question: engram − dense+rerank ΔR@5 = 0.000 (Neo4j) / 0.000 (engramdb),
+   engram − hybrid+rerank −0.004 / −0.003 — all **n.s.** (sign-p > 0.4; ~490/500
+   queries tie). bge-m3 already retrieves the linked passages (dense+rerank R@5
+   0.937), so the keyword-graph + PPR expansion has nothing left to recover. The
+   graph's measured lift is real only with a *weak* embedder (MiniLM: +1.7/+1.9 R@5/@10
+   — see [bench/RESULTS.md](../bench/RESULTS.md) §2). It is a **robustness floor**,
+   not a benchmark win.
+2. **engramdb (decay, no PPR) matches Neo4j (PPR) on multi-hop — at ~2× speed.**
+   R@5 0.9370 vs 0.9360, R@10 0.9670 vs 0.9640 (a tie, engramdb marginally ahead);
+   ingest 122 s vs 260 s, query 384 s vs 516 s. So dropping Personalized PageRank
+   for per-hop decay loses **nothing** on the graph's home turf with real models —
+   the central Engram-DB design bet, now confirmed end-to-end on the production stack.
+
 ## On-disk segment format — design + decision
 
 **What it is.** Today engramdb is in-memory with an optional whole-store pickle
