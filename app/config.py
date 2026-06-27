@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     # Engram-DB embedded backend (store_backend == "engramdb"): optional pickle
     # snapshot path for persistence; empty = in-memory only (prototype)
     engramdb_path: str = ""
+    # vector quantization for the ANN index: "f16" (½ memory, verified lossless
+    # for ranking — the default), "f32" (exact), "i8" (¼ memory; top-k identical,
+    # ~1pt deep-recall dip — the memory moat for large/unbounded memory), "b1"
+    # (1/32 memory, binary — needs a hamming metric, not wired yet).
+    engramdb_quantization: str = "f16"
 
     # startup guard when the embedding model/dim or channel set no longer match
     # the indexes already in the store: "error" = refuse to start, "warn" = log

@@ -380,10 +380,23 @@ speed win does not cost quality.
 - The **matmul → ANN** swap mattered: it cut 20k retrieval 51 → 28 ms (and 2k
   12.7 → 8.6). Same quality — usearch returns the exact-match top hits the tests
   assert.
-- **Now the bottleneck is the BM25 fulltext** (vector is sub-ms): 2 → 28 → 95 ms
-  over 2k → 20k → 50k. That's mostly a *synthetic-query artifact* — every profiler
-  query term is a super-common word with a huge posting list; real queries are
-  selective. Next levers: block-max/WAND-capped BM25, int8/binary vector
-  quantization (memory), and an incremental on-disk segment format (today it's an
-  in-memory store with an optional pickle snapshot). Then a real-models +
-  real-corpus run to confirm beyond the synthetic harness.
+- **Vector quantization (memory moat) — implemented + quality-verified.**
+  `ENGRAMDB_QUANTIZATION` = `f16` (default) / `f32` / `i8` / `b1` via the usearch
+  index `dtype`. SciFact, real pipeline:
+
+  | quant | nDCG@10 | Recall@10 | Recall@100 | memory |
+  |---|---|---|---|---|
+  | f32 | 0.7360 | 0.8360 | 0.9700 | 1× |
+  | **f16** (default) | 0.7360 | 0.8360 | 0.9700 | **½×** |
+  | i8 | 0.7358 | 0.8360 | 0.9600 | **¼×** |
+
+  **f16 is lossless for ranking** (identical to f32) → free 2× memory, the default.
+  **i8 keeps top-k identical** (only deep Recall@100 dips 1pt, still > pgvector's
+  0.915) at 4× savings — the opt-in moat for large/unbounded memory. So the memory
+  win does **not** cost the quality win.
+- **Remaining (lower-value) levers:** the one scaling bottleneck left is the BM25
+  fulltext (vector is now sub-ms), but that's mostly a *synthetic-query artifact*
+  (profiler query terms are super-common words → huge postings; real queries are
+  selective), so block-max/WAND BM25 is deferred until a real corpus shows it
+  matters. An incremental on-disk segment format (today: in-memory + optional
+  pickle snapshot) and a real-models/real-corpus run are the other follow-ups.

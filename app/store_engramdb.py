@@ -65,8 +65,9 @@ def _tokenize(text: str) -> list[str]:
 class EngramDBStore:
     """Embedded vector + lexical + native-graph store (the engram Store protocol)."""
 
-    def __init__(self, path: str | None = None) -> None:
+    def __init__(self, path: str | None = None, quantization: str = "f32") -> None:
         self._path = Path(path) if path else None
+        self._quant = quantization or "f32"  # f32 | f16 | i8 | b1 (usearch dtype)
         # documents: id -> {title, sources, created_at}
         self._docs: dict[str, dict[str, Any]] = {}
         # chunks: id -> full chunk record (text/summary/keywords/embeddings/...)
@@ -184,7 +185,9 @@ class EngramDBStore:
                 "tenants": np.asarray([t for _, _, t in rows], dtype=object),
             }
             if _USEARCH:
-                idx = _UIndex(ndim=mat.shape[1], metric="cos")
+                # dtype quantizes the stored vectors (f16/i8/b1) for memory; the
+                # query stays f32 and usearch de-quantizes for scoring
+                idx = _UIndex(ndim=mat.shape[1], metric="cos", dtype=self._quant)
                 idx.add(np.arange(len(rows), dtype=np.int64), mat)
                 entry["index"] = idx
             else:
@@ -559,4 +562,7 @@ class EngramDBStore:
 
 @STORES.register("engramdb")
 def _make_engramdb_store(settings: "Settings") -> EngramDBStore:
-    return EngramDBStore(getattr(settings, "engramdb_path", "") or None)
+    return EngramDBStore(
+        getattr(settings, "engramdb_path", "") or None,
+        getattr(settings, "engramdb_quantization", "f32") or "f32",
+    )
