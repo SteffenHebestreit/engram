@@ -73,6 +73,11 @@ class EngramDBStore:
         self._doc_len: dict[str, int] = {}  # chunk_id -> token count
         # implicit-relevance feedback: list of (query, query_id, [chunk_id])
         self._feedback: list[dict[str, Any]] = []
+        # per-channel vector matrices for a single-matmul ANN-free search, rebuilt
+        # lazily when chunks change: {prop: {"ids", "mat" (N×dim, L2-normalized),
+        # "tenants" (object array)}}. Not persisted — recomputed on load.
+        self._vec_cache: dict[str, dict[str, Any]] = {}
+        self._vec_dirty = True
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     async def connect(self) -> None:
@@ -81,6 +86,8 @@ class EngramDBStore:
                 state = pickle.load(f)
             self.__dict__.update(state)
             self._path = Path(self._path)  # restore after dict update
+            self._vec_cache = {}
+            self._vec_dirty = True
 
     async def init_schema(self) -> None:
         # nothing to build: the in-memory indexes are maintained on write
@@ -91,7 +98,9 @@ class EngramDBStore:
 
     async def close(self) -> None:
         if self._path:
-            state = {k: v for k, v in self.__dict__.items() if k != "_path"}
+            # _vec_cache is recomputable; don't bloat the snapshot with it
+            skip = {"_path", "_vec_cache"}
+            state = {k: v for k, v in self.__dict__.items() if k not in skip}
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with open(self._path, "wb") as f:
                 pickle.dump(state, f)
@@ -142,7 +151,55 @@ class EngramDBStore:
             self._chunks.pop(cid, None)
             n += 1
         self._docs.pop(doc_id, None)
+        if n:
+            self._vec_dirty = True
         return n
+
+    def _rebuild_vectors(self) -> None:
+        """(Re)build the per-channel matrices used for matmul vector search.
+
+        One L2-normalized (N × dim) matrix per embedding property, plus parallel
+        id and tenant arrays — so a search is a single `mat @ q` over all chunks
+        (fast on CPU at the scales a single node holds; an ANN index + int8/binary
+        quantization is the production swap)."""
+        by_prop: dict[str, list[tuple[str, Any, Any]]] = {}
+        for rec in self._chunks.values():
+            for prop, vec in rec["embeddings"].items():
+                by_prop.setdefault(prop, []).append((rec["id"], vec, rec.get("tenant_id")))
+        cache: dict[str, dict[str, Any]] = {}
+        for prop, rows in by_prop.items():
+            mat = np.asarray([v for _, v, _ in rows], dtype=np.float32)
+            norms = np.linalg.norm(mat, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            cache[prop] = {
+                "ids": [cid for cid, _, _ in rows],
+                "mat": mat / norms,
+                "tenants": np.asarray([t for _, _, t in rows], dtype=object),
+            }
+        self._vec_cache = cache
+        self._vec_dirty = False
+
+    def _cosine_topk(
+        self, prop: str, embedding: list[float], k: int, tenant_id: str | None
+    ) -> list[tuple[str, float]]:
+        """Top-k (chunk_id, cosine) for one channel via a single matmul."""
+        if self._vec_dirty:
+            self._rebuild_vectors()
+        entry = self._vec_cache.get(prop)
+        if not entry or not entry["ids"]:
+            return []
+        q = np.asarray(embedding, dtype=np.float32)
+        qn = float(np.linalg.norm(q)) or 1.0
+        scores = entry["mat"] @ (q / qn)  # cosine: rows already normalized
+        if tenant_id is not None:
+            scores = np.where(entry["tenants"] == tenant_id, scores, -np.inf)
+        n = scores.shape[0]
+        kk = min(k, n)
+        # argpartition for the top-kk, then sort just those
+        idx = np.argpartition(-scores, kk - 1)[:kk] if kk < n else np.arange(n)
+        idx = idx[np.argsort(-scores[idx])]
+        ids = entry["ids"]
+        return [(ids[i], float(scores[i])) for i in idx if scores[i] != -np.inf]
 
     # ── documents ────────────────────────────────────────────────────────────
     async def save_document(
@@ -178,6 +235,7 @@ class EngramDBStore:
             ordered.append(rec["id"])
         ordered.sort(key=lambda c: self._chunks[c]["seq"])
         self._doc_chunks[doc_id] = ordered
+        self._vec_dirty = True
 
     async def delete_document(self, doc_id: str) -> int | None:
         if doc_id not in self._docs:
@@ -265,20 +323,12 @@ class EngramDBStore:
         self, channel: "VectorChannel", embedding: list[float], k: int,
         tenant_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        prop = channel.embedding_prop
-        q = np.asarray(embedding, dtype=np.float32)
-        qn = float(np.linalg.norm(q)) or 1.0
-        scored = []
-        for rec in self._chunks.values():
-            if not self._tenant_ok(rec, tenant_id):
-                continue
-            v = rec["embeddings"].get(prop)
-            if v is None:
-                continue
-            denom = (float(np.linalg.norm(v)) or 1.0) * qn
-            scored.append((float(np.dot(q, v)) / denom, rec))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [self._hit(rec, s) for s, rec in scored[:k]]
+        return [
+            self._hit(self._chunks[cid], score)
+            for cid, score in self._cosine_topk(
+                channel.embedding_prop, embedding, k, tenant_id
+            )
+        ]
 
     def _bm25(self, query: str, tenant_id: str | None) -> dict[str, float]:
         terms = _tokenize(query)
@@ -400,26 +450,23 @@ class EngramDBStore:
         self, embedding: list[float], k: int, min_sim: float,
         exclude_doc_id: str | None = None, tenant_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        q = np.asarray(embedding, dtype=np.float32)
-        qn = float(np.linalg.norm(q)) or 1.0
-        scored = []
-        for rec in self._chunks.values():
+        # full ranked list via the matmul, then apply min_sim + exclude_doc_id
+        # (this is the ingest-time dedup primitive, not the search hot path)
+        ranked = self._cosine_topk(
+            "content_embedding", embedding, len(self._chunks), tenant_id
+        )
+        out = []
+        for cid, sim in ranked:
+            if sim < min_sim:
+                break
+            rec = self._chunks[cid]
             if exclude_doc_id and rec["doc_id"] == exclude_doc_id:
                 continue
-            if not self._tenant_ok(rec, tenant_id):
-                continue
-            v = rec["embeddings"].get("content_embedding")
-            if v is None:
-                continue
-            sim = float(np.dot(q, v)) / ((float(np.linalg.norm(v)) or 1.0) * qn)
-            if sim >= min_sim:
-                scored.append((sim, rec))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [
-            {"id": r["id"], "doc_id": r["doc_id"], "seq": r["seq"],
-             "text": r["text"], "sim": s}
-            for s, r in scored[:k]
-        ]
+            out.append({"id": rec["id"], "doc_id": rec["doc_id"],
+                        "seq": rec["seq"], "text": rec["text"], "sim": sim})
+            if len(out) >= k:
+                break
+        return out
 
     async def get_near_dup_links(self, chunk_ids: list[str]) -> dict[str, str]:
         out = {}
