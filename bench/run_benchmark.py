@@ -24,18 +24,21 @@ DATA_DIR = Path("/data")
 # optional cap on the number of test queries evaluated (0 = all). Sampling keeps
 # CPU runs tractable; the mean nDCG/recall is a fine estimate over ~100 queries.
 MAX_QUERIES = int(os.environ.get("BENCH_MAX_QUERIES", "0"))
-SCIFACT_URL = "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.zip"
+# which BEIR dataset to run (same loader works for any: corpus/queries/qrels)
+DATASET = os.environ.get("BENCH_DATASET", "scifact")
+BEIR_URL = "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/{name}.zip"
 
 
 # ── dataset ──────────────────────────────────────────────────────────────────
 def ensure_dataset() -> Path:
-    d = DATA_DIR / "scifact"
+    d = DATA_DIR / DATASET
     if (d / "corpus.jsonl").exists():
         return d
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    zip_path = DATA_DIR / "scifact.zip"
-    print(f"downloading {SCIFACT_URL} ...", flush=True)
-    urllib.request.urlretrieve(SCIFACT_URL, zip_path)
+    zip_path = DATA_DIR / f"{DATASET}.zip"
+    url = BEIR_URL.format(name=DATASET)
+    print(f"downloading {url} ...", flush=True)
+    urllib.request.urlretrieve(url, zip_path)
     with zipfile.ZipFile(zip_path) as z:
         z.extractall(DATA_DIR)
     return d
@@ -196,7 +199,7 @@ async def main():
         "MAP": avg(lambda q: average_precision(ranked_for(q), qrels[q])),
         "P@10": avg(lambda q: precision_at_k(ranked_for(q), qrels[q], 10)),
     }
-    print("\n=== engram on BEIR SciFact (dense MiniLM + BM25 fusion + cross-encoder) ===")
+    print(f"\n=== engram on BEIR {DATASET} (dense MiniLM + BM25 fusion + cross-encoder) ===")
     for name, value in metrics.items():
         print(f"  {name:<12} {value:.4f}")
 
