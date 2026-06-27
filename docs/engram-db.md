@@ -72,6 +72,50 @@ batchable — so Engram-DB's win shows up in QPS/$ and at scale, not just p50.
 - **Re-measure with real models** to set the honest per-query ceiling, and **sweep
   to 50k–500k docs** to size the scale win before committing to the native tier.
 
+## Backend comparison (Engram-Layer: Neo4j vs pgvector) — which to use now
+
+Same profiler, same synthetic corpus, `--fake-models`, mean ms/query:
+
+| metric | Neo4j 300 | pgvector 300 | Neo4j 2000 | pgvector 2000 |
+|---|---|---|---|---|
+| end-to-end | 73 | **66** | 120 | **59** |
+| vector retrieval (vec+FTS) | 24 | **7.6** | 37 | **11** |
+| graph (siblings ± PPR) | 42 | 54 | 74 | 42 |
+| CPU/other | 7 | 4.6 | 9 | 4.8 |
+
+Clean, consistent signals:
+- **pgvector vector retrieval is 2–3× faster** (7.6 vs 24 ms; 11 vs 37 ms) and
+  scales better — pgvector HNSW + `tsvector` beats Neo4j's vector + fulltext here.
+- **Neo4j end-to-end grows with the corpus** (73→120 ms) while pgvector stays
+  flat/low (66→59) — Neo4j's PPR/GDS projection cost scales with graph size.
+- The **graph row is noisy and partly an artifact**: the synthetic generator uses
+  a ~40-word vocabulary, so the `HAS_KEYWORD` graph is unrealistically dense and
+  the sibling join is worst-case on *both* backends (real corpora are far sparser).
+  Same corpus both sides → the *comparison* is fair; the absolute graph numbers
+  over-state realistic load. Neo4j additionally computes **PPR** here (a quality
+  signal) that pgvector does not.
+
+What pgvector gives up (feature, not latency): **PPR graph proximity** (→ decay
+fallback), the **community/theme layer**, and the **structured-entity graph**.
+Multi-tenancy, recency, contextual retrieval, learned-sparse, and sibling
+expansion work on both.
+
+**Recommendation for the current state of the project: stay on Neo4j as the
+default.** The graph layer (PPR-in-the-ranker, communities, entity graph) is
+engram's headline differentiator (see [competitive-scorecard.md](competitive-scorecard.md)),
+the project is still establishing that moat, and at today's corpus sizes the gap
+is tens of ms — quality/features win over raw speed now.
+
+**Choose pgvector when** ops simplicity dominates (you already run Postgres — one
+fewer system than Neo4j+GDS), the corpus is large (better latency scaling), or the
+workload is plain hybrid retrieval where PPR tends to wash out at the reranker
+anyway (our BEIR finding). It's a first-class lighter alternative, not a downgrade
+for those cases.
+
+**Caveat:** this compares *latency + features*. Whether PPR/communities lift
+*quality* on your corpus needs a real `/eval` with live endpoints (gated here) —
+run it before dropping the graph for a connected/multi-hop corpus.
+
 ## Status
 
 - `bench/profile_latency.py` shipped (this branch). Fake-models numbers above are
