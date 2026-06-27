@@ -29,6 +29,7 @@ async def search(
     query: str,
     top_k: int | None = None,
     tuning: dict | None = None,
+    tenant_id: str | None = None,
 ) -> list[SearchResult]:
     """Search pipeline:
 
@@ -46,6 +47,11 @@ async def search(
     5. pick the rerank shortlist with MMR so near-duplicate neighbours don't
        crowd out other relevant regions
     6. rerank, sort by reranker score and autocut after the first score cliff
+
+    With `tenant_id`, every chunk-surfacing read is restricted to that tenant for
+    0% cross-tenant leakage: the dense + fulltext channels filter in-scan, and the
+    graph siblings (which can reach another tenant's chunk via a shared keyword)
+    are filtered here before they enter the pool. `None` = untenanted search.
     """
     started = time.perf_counter()
     base = get_settings()
@@ -58,7 +64,7 @@ async def search(
     # query embedding is computed — which can take a while when HyDE adds an
     # LLM round trip
     fulltext_task = asyncio.create_task(
-        store.fulltext_search(query, settings.top_k_per_index)
+        store.fulltext_search(query, settings.top_k_per_index, tenant_id)
     )
     try:
         query_emb = await _query_embedding(http, query, settings)
@@ -78,7 +84,7 @@ async def search(
     channels = resolve_vector_channels(settings) if query_emb is not None else []
     *channel_hits, fulltext_hits = await asyncio.gather(
         *(
-            store.vector_search(ch, query_emb, settings.top_k_per_index)
+            store.vector_search(ch, query_emb, settings.top_k_per_index, tenant_id)
             for ch in channels
         ),
         fulltext_task,
@@ -106,6 +112,13 @@ async def search(
     siblings = await get_expander(settings.expander_strategy)(
         store, list(seed_scores), settings
     )
+
+    # graph expansion can cross tenants: a HAS_KEYWORD sibling (or any sibling row)
+    # may belong to another tenant. The seeds are already tenant-filtered, but the
+    # siblings are not — drop any that aren't this tenant's before they enter the
+    # pool (the final isolation gate on the graph path).
+    if tenant_id is not None:
+        siblings = [s for s in siblings if s.get("tenant_id") == tenant_id]
 
     # graph proximity per sibling (parallel to `siblings`): personalized
     # PageRank spreads activation from the seeds and accumulates over multiple

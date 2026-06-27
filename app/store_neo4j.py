@@ -79,12 +79,20 @@ class Neo4jStore:
 
     # ── retrieval ────────────────────────────────────────────────────────────
     async def vector_search(
-        self, channel: "VectorChannel", embedding: list[float], k: int
+        self,
+        channel: "VectorChannel",
+        embedding: list[float],
+        k: int,
+        tenant_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        return await graph.vector_search(self._driver, channel.index, embedding, k)
+        return await graph.vector_search(
+            self._driver, channel.index, embedding, k, tenant_id
+        )
 
-    async def fulltext_search(self, query: str, k: int) -> list[dict[str, Any]]:
-        return await graph.fulltext_search(self._driver, query, k)
+    async def fulltext_search(
+        self, query: str, k: int, tenant_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        return await graph.fulltext_search(self._driver, query, k, tenant_id)
 
     async def fetch_siblings(
         self, seed_ids: list[str], keyword_sibling_limit: int, sequence_max_hops: int
@@ -109,9 +117,10 @@ class Neo4jStore:
         k: int,
         min_sim: float,
         exclude_doc_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> list[dict[str, Any]]:
         return await graph.nearest_chunks(
-            self._driver, embedding, k, min_sim, exclude_doc_id
+            self._driver, embedding, k, min_sim, exclude_doc_id, tenant_id
         )
 
     async def get_near_dup_links(self, chunk_ids: list[str]) -> dict[str, str]:

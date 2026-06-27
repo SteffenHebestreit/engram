@@ -25,13 +25,18 @@ _TIMEOUT = float(os.environ.get("ENGRAM_MCP_TIMEOUT", "120"))
 
 
 async def proxy_search(
-    query: str, top_k: int = 8, preset: str | None = None
+    query: str,
+    top_k: int = 8,
+    preset: str | None = None,
+    tenant_id: str | None = None,
 ) -> list[dict]:
     body: dict = {"query": query}
     if top_k:
         body["top_k"] = top_k
     if preset:
         body["tuning"] = {"preset": preset}
+    if tenant_id:
+        body["tenant_id"] = tenant_id
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         resp = await client.post(f"{ENGRAM_API_BASE}/search", json=body)
         resp.raise_for_status()
@@ -74,16 +79,22 @@ def build_server():
     server = FastMCP("engram")
 
     @server.tool()
-    async def search(query: str, top_k: int = 8, preset: str | None = None) -> list[dict]:
+    async def search(
+        query: str,
+        top_k: int = 8,
+        preset: str | None = None,
+        tenant_id: str | None = None,
+    ) -> list[dict]:
         """Search the document knowledge base for passages relevant to a query.
 
         Returns ranked chunks, each with its text, source document id, and score
         provenance (retrieval / median / graph-proximity / rerank scores that
         explain why it was retrieved). Use this to gather grounding context to
         answer a question from the documents. `preset` optionally trades cost vs
-        quality: "cheap" | "balanced" | "max_quality".
+        quality: "cheap" | "balanced" | "max_quality". `tenant_id` scopes the
+        search to one tenant's documents (omit for an untenanted knowledge base).
         """
-        return await proxy_search(query, top_k, preset)
+        return await proxy_search(query, top_k, preset, tenant_id)
 
     @server.tool()
     async def get_chunk_context(chunk_id: str, before: int = 2, after: int = 2) -> list[dict]:

@@ -14,7 +14,9 @@ if TYPE_CHECKING:
     from .store import Store
 
 
-def compute_document_id(text: str, explicit: str | None = None) -> str:
+def compute_document_id(
+    text: str, explicit: str | None = None, tenant_id: str | None = None
+) -> str:
     """Stable identifier for a document.
 
     A caller can pass its own `document_id` (its existing handle for the doc in
@@ -23,12 +25,23 @@ def compute_document_id(text: str, explicit: str | None = None) -> str:
     *recomputable*, so the document can be deleted later without having stored
     the value we returned — and re-ingesting the same document replaces it
     instead of creating a duplicate.
+
+    When `tenant_id` is set the id is namespaced to that tenant (`tenant:base`).
+    Without this, two tenants ingesting identical content would map to one
+    content-addressed id (a cross-tenant existence oracle, and one tenant's chunks
+    would silently absorb the other's), and two tenants reusing the same explicit
+    `document_id` would collide — the second ingest would delete and replace the
+    first tenant's document. Namespacing keeps each tenant's id space disjoint, so
+    the recompute-to-delete story still holds (pass the same `tenant_id`).
     """
+    base = ""
     if explicit:
-        cleaned = explicit.strip()
-        if cleaned:
-            return cleaned
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+        base = explicit.strip()
+    if not base:
+        base = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    if tenant_id:
+        return f"{tenant_id}:{base}"
+    return base
 
 
 async def ingest_document(
@@ -38,6 +51,7 @@ async def ingest_document(
     title: str = "",
     source: str = "",
     document_id: str | None = None,
+    tenant_id: str | None = None,
 ) -> tuple[str, int, list[str]]:
     """Full ingestion pipeline: chunk -> LLM metadata -> 3x embeddings -> graph.
 
@@ -52,7 +66,7 @@ async def ingest_document(
         raise ValueError("a non-empty source is required")
 
     settings = get_settings()
-    doc_id = compute_document_id(text, document_id)
+    doc_id = compute_document_id(text, document_id, tenant_id)
     content_addressed = document_id is None
 
     existing = await store.get_document(doc_id)
@@ -163,6 +177,7 @@ async def ingest_document(
                 settings.dedup_candidate_k,
                 settings.dedup_cosine_threshold,
                 exclude_doc_id=doc_id,
+                tenant_id=tenant_id,
             )
             return i, (near[0]["id"] if near else None)
 
@@ -182,6 +197,7 @@ async def ingest_document(
             },
             "sparse_weights": sparse_by_seq[seq],
             "near_dup_of": near_dup_by_seq[seq],
+            "tenant_id": tenant_id,
         }
         for seq in range(len(chunks))
     ]

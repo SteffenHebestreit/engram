@@ -81,10 +81,10 @@ async def test_ingest_default_has_no_prefix(monkeypatch):
 
 
 def _stub_empty_retrieval(monkeypatch):
-    async def empty_vec(driver, index_name, embedding, k):
+    async def empty_vec(driver, index_name, embedding, k, tenant_id=None):
         return []
 
-    async def empty_ft(driver, query, k):
+    async def empty_ft(driver, query, k, tenant_id=None):
         return []
 
     monkeypatch.setattr(graph, "vector_search", empty_vec)

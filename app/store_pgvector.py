@@ -173,6 +173,11 @@ class PgvectorStore:
             await conn.execute(
                 "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS near_dup_of TEXT"
             )
+            # multi-tenancy: per-chunk tenant; every chunk-surfacing read filters
+            # on it for 0% cross-tenant leakage (NULL = untenanted)
+            await conn.execute(
+                "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS tenant_id TEXT"
+            )
             await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS chunk_keywords (
@@ -196,6 +201,9 @@ class PgvectorStore:
             )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS chunks_doc_seq_idx ON chunks (doc_id, seq)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS chunks_tenant_idx ON chunks (tenant_id)"
             )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS chunk_keywords_kw_idx "
@@ -223,7 +231,7 @@ class PgvectorStore:
         emb_cols = [_safe_column(ch.embedding_prop) for ch in channels]
         cols = [
             "id", "doc_id", "seq", "text", "summary", "keywords",
-            "sparse_weights", "near_dup_of", *emb_cols,
+            "sparse_weights", "near_dup_of", "tenant_id", *emb_cols,
         ]
         placeholders = ", ".join(["%s"] * len(cols))
         col_list = ", ".join(cols)
@@ -256,6 +264,7 @@ class PgvectorStore:
                     ch["keywords"],
                     Jsonb(sparse) if sparse else None,
                     ch.get("near_dup_of"),
+                    ch.get("tenant_id"),
                 ]
                 for col, channel in zip(emb_cols, channels):
                     vec = embeddings[channel.embedding_prop]
@@ -451,7 +460,11 @@ class PgvectorStore:
 
     # ── retrieval ────────────────────────────────────────────────────────────
     async def vector_search(
-        self, channel: "VectorChannel", embedding: list[float], k: int
+        self,
+        channel: "VectorChannel",
+        embedding: list[float],
+        k: int,
+        tenant_id: str | None = None,
     ) -> list[dict[str, Any]]:
         from psycopg.rows import dict_row
 
@@ -459,14 +472,22 @@ class PgvectorStore:
         vec = np.asarray(embedding, dtype=np.float32)
         async with self._pool.connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
-                # cosine distance <=> in [0,2]; similarity = 1 - distance
+                # cosine distance <=> in [0,2]; similarity = 1 - distance. The
+                # tenant filter is applied in-scan (the isolation guarantee). HNSW
+                # collects ef_search candidates *before* applying the filter, so a
+                # selective tenant in a large corpus can yield a short top-k; raise
+                # ef_search (transaction-local) to over-fetch, mirroring the Neo4j
+                # backend's ×tenant_overfetch.
+                await self._set_tenant_ef_search(cur, k, tenant_id)
                 await cur.execute(
                     f"""
-                    SELECT {_CHUNK_COLS}, 1 - ({col} <=> %s) AS score
-                    FROM chunks WHERE {col} IS NOT NULL
-                    ORDER BY {col} <=> %s LIMIT %s
+                    SELECT {_CHUNK_COLS}, 1 - ({col} <=> %(vec)s) AS score
+                    FROM chunks
+                    WHERE {col} IS NOT NULL
+                      AND (%(tenant)s::text IS NULL OR tenant_id = %(tenant)s::text)
+                    ORDER BY {col} <=> %(vec)s LIMIT %(k)s
                     """,
-                    (vec, vec, k),
+                    {"vec": vec, "tenant": tenant_id, "k": k},
                 )
                 return [_row(r) for r in await cur.fetchall()]
 
@@ -476,30 +497,52 @@ class PgvectorStore:
         k: int,
         min_sim: float,
         exclude_doc_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> list[dict[str, Any]]:
         from psycopg.rows import dict_row
 
         vec = np.asarray(embedding, dtype=np.float32)
         # ANN top-k via the HNSW index, then filter by min_sim (mirrors the Neo4j
-        # queryNodes-then-filter path); cosine similarity = 1 - cosine distance
+        # queryNodes-then-filter path); cosine similarity = 1 - cosine distance.
+        # tenant filter keeps dedup within-tenant.
         exclude_clause = "AND doc_id <> %(exclude)s" if exclude_doc_id else ""
         async with self._pool.connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
+                await self._set_tenant_ef_search(cur, k, tenant_id)
                 await cur.execute(
                     f"""
                     SELECT id, doc_id, seq, text,
                            1 - (content_embedding <=> %(vec)s) AS sim
                     FROM chunks
                     WHERE content_embedding IS NOT NULL {exclude_clause}
+                      AND (%(tenant)s::text IS NULL OR tenant_id = %(tenant)s::text)
                     ORDER BY content_embedding <=> %(vec)s
                     LIMIT %(k)s
                     """,
-                    {"vec": vec, "k": k, "exclude": exclude_doc_id},
+                    {"vec": vec, "k": k, "exclude": exclude_doc_id, "tenant": tenant_id},
                 )
                 rows = await cur.fetchall()
         return [r for r in rows if r["sim"] >= min_sim]
 
-    async def fulltext_search(self, query: str, k: int) -> list[dict[str, Any]]:
+    async def _set_tenant_ef_search(
+        self, cur: Any, k: int, tenant_id: str | None
+    ) -> None:
+        """Transaction-local HNSW over-fetch for a tenant-filtered vector read.
+
+        No-op when untenanted. ef_search is clamped to pgvector's [1, 1000] range.
+        SET LOCAL only affects the current transaction (the pooled connection's
+        `async with` block), so it never leaks to other queries."""
+        if tenant_id is None:
+            return
+        overfetch = max(1, int(self._settings().tenant_overfetch))
+        ef = min(1000, max(int(k), int(k) * overfetch))
+        # ef_search must be >= LIMIT to return a full k; pgvector ignores values
+        # below 1. Identifier is fixed, value is an int we computed — safe.
+        await cur.execute(f"SET LOCAL hnsw.ef_search = {ef}")
+
+    async def fulltext_search(
+        self, query: str, k: int, tenant_id: str | None = None
+    ) -> list[dict[str, Any]]:
         from psycopg.rows import dict_row
 
         if not _sanitize_fulltext_query(query):
@@ -509,11 +552,12 @@ class PgvectorStore:
                 await cur.execute(
                     f"""
                     SELECT {_CHUNK_COLS}, ts_rank(tsv, q) AS score
-                    FROM chunks, plainto_tsquery('english', %s) q
+                    FROM chunks, plainto_tsquery('english', %(query)s) q
                     WHERE tsv @@ q
-                    ORDER BY score DESC LIMIT %s
+                      AND (%(tenant)s::text IS NULL OR tenant_id = %(tenant)s::text)
+                    ORDER BY score DESC LIMIT %(k)s
                     """,
-                    (query, k),
+                    {"query": query, "k": k, "tenant": tenant_id},
                 )
                 return [_row(r) for r in await cur.fetchall()]
 
@@ -530,6 +574,7 @@ class PgvectorStore:
                     """
                     SELECT seed.id AS seed_id, sib.id, sib.doc_id, sib.text,
                            sib.summary, sib.keywords, sib.content_embedding,
+                           sib.tenant_id,
                            'sequence' AS via,
                            CASE WHEN sib.seq > seed.seq THEN 'after'
                                 ELSE 'before' END AS direction,
@@ -550,11 +595,12 @@ class PgvectorStore:
                 await cur.execute(
                     """
                     SELECT seed_id, id, doc_id, text, summary, keywords,
-                           content_embedding, 'keyword' AS via,
+                           content_embedding, tenant_id, 'keyword' AS via,
                            'lateral' AS direction, 1 AS distance, strength
                     FROM (
                         SELECT seed.id AS seed_id, sib.id, sib.doc_id, sib.text,
                                sib.summary, sib.keywords, sib.content_embedding,
+                               sib.tenant_id,
                                count(*)::float8 AS strength,
                                row_number() OVER (
                                    PARTITION BY seed.id ORDER BY count(*) DESC

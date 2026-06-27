@@ -64,14 +64,14 @@ def patched(monkeypatch):
     async def fake_embed_text(client, text):
         return [1.0, 0.0, 0.0]
 
-    async def fake_vector_search(driver, index_name, embedding, k):
+    async def fake_vector_search(driver, index_name, embedding, k, tenant_id=None):
         return {
             "chunk_content_idx": [_hit("A", 0.9), _hit("B", 0.8)],
             "chunk_summary_idx": [_hit("A", 0.95)],
             "chunk_keywords_idx": [_hit("C", 0.5)],
         }[index_name]
 
-    async def fake_fulltext_search(driver, query, k):
+    async def fake_fulltext_search(driver, query, k, tenant_id=None):
         # Lucene-style unbounded scores; F is the best lexical match
         return [{**_hit("F", 8.0)}, {**_hit("A", 4.0)}]
 
@@ -239,11 +239,11 @@ async def test_hyde_blends_query_and_hypothetical(patched, monkeypatch):
         assert texts == ["test query", "a hypothetical answer"]
         return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
 
-    async def recording_vector_search(driver, index_name, embedding, k):
+    async def recording_vector_search(driver, index_name, embedding, k, tenant_id=None):
         seen_embeddings.append(embedding)
         return []
 
-    async def fake_fulltext(driver, query, k):
+    async def fake_fulltext(driver, query, k, tenant_id=None):
         return []
 
     monkeypatch.setattr(search_mod, "generate_hypothetical_answer", fake_generate)
@@ -349,7 +349,7 @@ async def test_embeddings_down_falls_back_to_fulltext_only(patched, monkeypatch)
     async def boom_embed(client, text):
         raise RuntimeError("embedding endpoint down")
 
-    async def counting_vector_search(driver, index_name, embedding, k):
+    async def counting_vector_search(driver, index_name, embedding, k, tenant_id=None):
         calls["vector"] += 1
         return []
 
@@ -373,10 +373,10 @@ async def test_no_hits_returns_empty(monkeypatch):
     async def fake_embed_text(client, text):
         return [1.0, 0.0, 0.0]
 
-    async def fake_vector_search(driver, index_name, embedding, k):
+    async def fake_vector_search(driver, index_name, embedding, k, tenant_id=None):
         return []
 
-    async def fake_fulltext_search(driver, query, k):
+    async def fake_fulltext_search(driver, query, k, tenant_id=None):
         return []
 
     monkeypatch.setattr(search_mod, "embed_text", fake_embed_text)

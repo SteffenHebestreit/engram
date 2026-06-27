@@ -13,6 +13,9 @@ class IngestRequest(BaseModel):
     # version. Use it (or the content hash) to DELETE /documents/{id} later
     # without having stored the id we returned.
     document_id: str | None = None
+    # optional tenant the document belongs to; propagated to its chunks so search
+    # can isolate by tenant. None = untenanted (visible to untenanted searches).
+    tenant_id: str | None = None
 
 
 class IngestResponse(BaseModel):
@@ -29,6 +32,9 @@ class SearchRequest(BaseModel):
     # A "preset" key selects a named bundle (cheap/balanced/max_quality, see
     # app/presets.py); explicit fields here override the preset.
     tuning: dict[str, object] | None = None
+    # restrict the search to one tenant's documents (0% cross-tenant leakage);
+    # None = untenanted search (sees untenanted documents)
+    tenant_id: str | None = None
 
 
 class SearchResult(BaseModel):

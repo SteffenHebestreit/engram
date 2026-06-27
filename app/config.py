@@ -153,6 +153,13 @@ class Settings(BaseSettings):
     # extraction + embedding (identical text => identical metadata/vectors)
     reuse_unchanged_chunks: bool = True
 
+    # multi-tenant retrieval: when a /search (or ingest) supplies a tenant_id,
+    # every chunk-surfacing read is filtered to it (0% cross-tenant leakage). The
+    # vector indexes return their top-k BEFORE the tenant filter, so a filtered
+    # query over-fetches this multiple of k then keeps the tenant's k — raise it
+    # if a tenant is a tiny slice of a large shared corpus. Untenanted by default.
+    tenant_overfetch: int = 8
+
     # search tuning
     top_k_per_index: int = 12
     seed_count: int = 8
