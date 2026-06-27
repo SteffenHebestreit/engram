@@ -316,10 +316,21 @@ so only the reranker changes.
 **This breaks the ~0.741 ceiling — the single biggest jump in this whole study
 (+3.15 nDCG@10 / +3.5 recall@10), from one drop-in change.** It confirms the
 thesis exactly: the reranker *was* the ceiling, and because nothing re-scores
-*after* it, a better reranker lifts everything — and engram's fusion + graph +
-MMR still add **+2.15 on top of it** (engram 0.7723 vs dense+rerank 0.7508), so
-the pipeline's value did **not** wash out here; it compounds with a reranker
-strong enough to keep the gains.
+*after* it, a better reranker lifts everything.
+
+> **Rigorous re-check (2026-06-27, engramdb backend, with a `hybrid+rerank`
+> control + paired tests):** engram·engramdb + Qwen3-Reranker = **0.7738**, which
+> **ties the neo4j 0.7723** above — so the reranker upgrade is backend-agnostic and
+> the embedded backend delivers it too (the "+3 nDCG win" is preserved on
+> engramdb). But the earlier "engram's fusion+graph+MMR add +2.15 over
+> dense+rerank" attribution is **mostly the BM25 fusion, not the graph/MMR**: a
+> `hybrid+rerank` baseline reaches **0.7699**, and `engram − hybrid+rerank` is just
+> **+0.0038 (n.s.**, sign-p 0.17). `engram − dense+rerank` (+0.0229) clears the
+> bootstrap mean-CI [+0.007, +0.043] but its per-query **sign test is n.s.**
+> (26 win / 248 tie / 26 loss — the mean is carried by a few large gains, not a
+> broad edge). Honest reading: the **reranker** is the real, large, dataset-robust
+> lever; engram's distinctive stages do not add a *statistically robust* lift over
+> a strong hybrid baseline even at the better reranker.
 
 **It generalizes** — the reranker swap lifts engram on NFCorpus too, by *more*:
 0.3411 → **0.3795 nDCG@10 (+3.84)**, recall@10 0.1666 → 0.1801. So the reranker
