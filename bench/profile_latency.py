@@ -60,11 +60,18 @@ _VOCAB = (
 
 def _doc_text(seed: int, paras: int = 3, sents: int = 6) -> str:
     rng = np.random.RandomState(seed)
+    # Each doc mixes common terms with its own "jargon" (jargon dominates), so the
+    # HAS_KEYWORD graph is realistically sparse — keyword siblings stay mostly
+    # within a document instead of the pathologically dense join a tiny shared
+    # vocabulary produces, which otherwise dominates (and distorts) the graph stage
+    # at scale.
+    jargon = [f"d{seed}t{i}" for i in range(6)]
+    pool = _VOCAB + jargon * 6
     out = []
     for _ in range(paras):
         sentences = []
         for _ in range(sents):
-            words = rng.choice(_VOCAB, size=rng.randint(8, 16))
+            words = rng.choice(pool, size=rng.randint(8, 16))
             sentences.append(" ".join(words).capitalize() + ".")
         out.append(" ".join(sentences))
     return "\n\n".join(out)
