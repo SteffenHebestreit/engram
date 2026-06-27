@@ -5,6 +5,28 @@ All notable changes to **engram**. Format loosely follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-27
+
+### Added
+- **Engram-DB embedded backend** (`STORE_BACKEND=engramdb`, **experimental**) — a
+  purpose-built, single-process retrieval store distilled from the v0.3.0
+  evaluation: in-process vector search (usearch ANN, `ENGRAMDB_QUANTIZATION`
+  f16/f32/i8/b1), BM25 over text+summary+context (contextual BM25), and a
+  **native-adjacency** graph (NEXT_CHUNK + keyword) with decay proximity — **no
+  PPR/GDS, no community synthesis, no structured-entity graph, no server**.
+  Optional pickle snapshot (`ENGRAMDB_PATH`); supports multi-tenancy, recency,
+  sparse, near-dup links and feedback. See [docs/engram-db.md](docs/engram-db.md).
+  - **Fastest backend at every measured scale, same quality.** Profiler
+    (decay-vs-decay, end-to-end): 8.6 ms @2k / 41.6 ms @20k vs Neo4j+decay
+    52 / 67 and pgvector 28 / 131; ingest 10–25× faster. Quality on SciFact +
+    NFCorpus matches Neo4j/pgvector (e.g. SciFact nDCG@10 0.736, Recall@100 0.970
+    — ties Neo4j, beats pgvector). f16 quantization is lossless for ranking; i8
+    keeps top-k identical at ¼ the memory.
+
+### Changed
+- New optional dependency `usearch` (the engramdb ANN index; other backends
+  ignore it, and engramdb falls back to an exact matmul if it is absent).
+
 ## [0.3.0] - 2026-06-27
 
 ### Added
