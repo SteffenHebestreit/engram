@@ -347,7 +347,30 @@ change these deltas.
   multi-tenancy / recency / sparse / near-dup / feedback. Optional pickle snapshot
   (`ENGRAMDB_PATH`). Community synthesis + structured-entity graph deliberately
   omitted. Runs the full pipeline + passes an in-process test suite (no server).
-- **Next for the prototype → production tier:** swap brute-force cosine for an ANN
-  index (usearch/HNSW) + int8/binary quantization (the scale lever), and the
-  whole-snapshot pickle for an incremental on-disk segment format; then run the
-  real-models latency + 50k–500k sweep to size the win and decide how far to push.
+### Prototype benchmark — Engram-DB **wins across the board**
+
+Same profiler, `--fake-models`, decay-vs-decay, end-to-end ms/query (engramdb runs
+in-process; the others over a container socket):
+
+| docs | Neo4j+decay | pgvector | engramdb (matmul) | **engramdb + ANN** |
+|---|---|---|---|---|
+| 2k | 52 | 28 | 12.7 | **8.6** |
+| 20k | 67 | 131 | 78.5 | **41.6** |
+| 50k | — | — | — | 122.8 |
+| ingest 20k | ~49 s | ~25 s | 19 s | **19 s** |
+
+- **engramdb is fastest at every compared scale** — ~3–6× faster than the backends
+  at 2k, and at 20k (**41.6 ms**) it beats Neo4j+decay (67) *and* pgvector (131).
+  The win comes from being in-process (no socket / query-parse round-trip), a
+  **native-adjacency** graph (best graph stage: 0.6 / 5.6 ms vs 11–85), and an ANN
+  index (usearch) for sub-linear vector search.
+- The **matmul → ANN** swap mattered: it cut 20k retrieval 51 → 28 ms (and 2k
+  12.7 → 8.6). Same quality — usearch returns the exact-match top hits the tests
+  assert.
+- **Now the bottleneck is the BM25 fulltext** (vector is sub-ms): 2 → 28 → 95 ms
+  over 2k → 20k → 50k. That's mostly a *synthetic-query artifact* — every profiler
+  query term is a super-common word with a huge posting list; real queries are
+  selective. Next levers: block-max/WAND-capped BM25, int8/binary vector
+  quantization (memory), and an incremental on-disk segment format (today it's an
+  in-memory store with an optional pickle snapshot). Then a real-models +
+  real-corpus run to confirm beyond the synthetic harness.

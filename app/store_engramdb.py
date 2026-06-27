@@ -42,6 +42,13 @@ import numpy as np
 
 from .store import STORES
 
+try:  # optional ANN index for sub-linear vector search (+ quantization)
+    from usearch.index import Index as _UIndex
+
+    _USEARCH = True
+except Exception:  # pragma: no cover - falls back to exact matmul
+    _USEARCH = False
+
 if TYPE_CHECKING:
     from .channels import VectorChannel
     from .config import Settings
@@ -156,12 +163,12 @@ class EngramDBStore:
         return n
 
     def _rebuild_vectors(self) -> None:
-        """(Re)build the per-channel matrices used for matmul vector search.
+        """(Re)build the per-channel vector index used for search.
 
-        One L2-normalized (N × dim) matrix per embedding property, plus parallel
-        id and tenant arrays — so a search is a single `mat @ q` over all chunks
-        (fast on CPU at the scales a single node holds; an ANN index + int8/binary
-        quantization is the production swap)."""
+        One entry per embedding property: parallel id + tenant arrays plus either a
+        usearch ANN **index** (sub-linear search; the production path) or, when
+        usearch is absent, an L2-normalized (N × dim) **matrix** for an exact
+        matmul. Rebuilt lazily when chunks change."""
         by_prop: dict[str, list[tuple[str, Any, Any]]] = {}
         for rec in self._chunks.values():
             for prop, vec in rec["embeddings"].items():
@@ -171,34 +178,56 @@ class EngramDBStore:
             mat = np.asarray([v for _, v, _ in rows], dtype=np.float32)
             norms = np.linalg.norm(mat, axis=1, keepdims=True)
             norms[norms == 0] = 1.0
-            cache[prop] = {
+            mat = mat / norms
+            entry: dict[str, Any] = {
                 "ids": [cid for cid, _, _ in rows],
-                "mat": mat / norms,
                 "tenants": np.asarray([t for _, _, t in rows], dtype=object),
             }
+            if _USEARCH:
+                idx = _UIndex(ndim=mat.shape[1], metric="cos")
+                idx.add(np.arange(len(rows), dtype=np.int64), mat)
+                entry["index"] = idx
+            else:
+                entry["mat"] = mat
+            cache[prop] = entry
         self._vec_cache = cache
         self._vec_dirty = False
 
     def _cosine_topk(
         self, prop: str, embedding: list[float], k: int, tenant_id: str | None
     ) -> list[tuple[str, float]]:
-        """Top-k (chunk_id, cosine) for one channel via a single matmul."""
+        """Top-k (chunk_id, cosine) for one channel — ANN index when available,
+        exact matmul otherwise. Tenant filtering over-fetches the index then keeps
+        the tenant's k (same trick as the per-tenant ef_search bump elsewhere)."""
         if self._vec_dirty:
             self._rebuild_vectors()
         entry = self._vec_cache.get(prop)
-        if not entry or not entry["ids"]:
+        if not entry or not entry["ids"] or k <= 0:
             return []
+        ids, tenants = entry["ids"], entry["tenants"]
         q = np.asarray(embedding, dtype=np.float32)
-        qn = float(np.linalg.norm(q)) or 1.0
-        scores = entry["mat"] @ (q / qn)  # cosine: rows already normalized
+        q = q / (float(np.linalg.norm(q)) or 1.0)
+        n = len(ids)
+
+        if "index" in entry:
+            count = min(n, k * 8 if tenant_id is not None else k)
+            m = entry["index"].search(q, count)
+            out = []
+            for key, dist in zip(np.atleast_1d(m.keys), np.atleast_1d(m.distances)):
+                i = int(key)
+                if tenant_id is not None and tenants[i] != tenant_id:
+                    continue
+                out.append((ids[i], 1.0 - float(dist)))  # cos: sim = 1 - distance
+                if len(out) >= k:
+                    break
+            return out
+
+        scores = entry["mat"] @ q  # exact cosine (rows already normalized)
         if tenant_id is not None:
-            scores = np.where(entry["tenants"] == tenant_id, scores, -np.inf)
-        n = scores.shape[0]
+            scores = np.where(tenants == tenant_id, scores, -np.inf)
         kk = min(k, n)
-        # argpartition for the top-kk, then sort just those
         idx = np.argpartition(-scores, kk - 1)[:kk] if kk < n else np.arange(n)
         idx = idx[np.argsort(-scores[idx])]
-        ids = entry["ids"]
         return [(ids[i], float(scores[i])) for i in idx if scores[i] != -np.inf]
 
     # ── documents ────────────────────────────────────────────────────────────

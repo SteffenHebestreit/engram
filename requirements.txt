@@ -11,3 +11,7 @@ psycopg-pool>=3.2
 pgvector>=0.3
 # statistical (no-LLM) keyword extraction for METADATA_EXTRACTOR=yake
 yake>=0.4.8
+# Engram-DB embedded backend (store_backend=engramdb): ANN vector index
+# (sub-linear search + int8/binary quantization). Optional — engramdb falls back
+# to an exact matmul when it is absent; other backends ignore it.
+usearch>=2.12
