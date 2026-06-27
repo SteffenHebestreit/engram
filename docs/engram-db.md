@@ -235,11 +235,24 @@ dominates and grows. The PPR decomposition (Neo4j 20k, `GRAPH_PROXIMITY_MODE=dec
 → **PPR costs ~115 ms (≈65% of latency) at 20k for zero quality** — dropping it
 makes Neo4j **2.7× faster**. So the fair comparison is **decay vs decay**:
 
-| decay vs decay | Neo4j 2k | pgvector 2k | Neo4j 20k | pgvector 20k |
+| decay vs decay — end-to-end (ms) | 2k | 5k | 10k | 20k |
 |---|---|---|---|---|
-| **end-to-end** | 52 | **28** | **67** | 131 |
-| ├─ retrieval | 26 | 12 | 30 | 40 |
-| ├─ graph | 20 | 11 | 29 | 85 |
+| Neo4j + decay | 52 | 57 | **55** | **67** |
+| pgvector + decay | **28** | 57 | 133 | 131 |
+
+**Crossover ≈ 5k documents.** Below it pgvector wins; at ~5k they tie (~57 ms);
+above it **Neo4j+decay wins and stays nearly flat (~55–67 ms across 2k→20k)** while
+pgvector degrades to ~130 ms (its HNSW retrieval + SQL keyword-join grow with the
+corpus; numbers are also noisier run-to-run). Actionable rule: **pgvector under
+~5k docs, Neo4j+decay above** (real-corpus / real-models would shift the exact
+threshold, but Neo4j's flat scaling vs pgvector's steep growth is the robust shape).
+
+Stage detail at the endpoints (decay vs decay):
+
+| stage | Neo4j 2k | pgvector 2k | Neo4j 20k | pgvector 20k |
+|---|---|---|---|---|
+| retrieval | 26 | 12 | 30 | 40 |
+| graph | 20 | 11 | 29 | 85 |
 
 What this actually shows (corrects the earlier "pgvector is ~2× faster" call,
 which was comparing pgvector+decay against Neo4j+**PPR**):
