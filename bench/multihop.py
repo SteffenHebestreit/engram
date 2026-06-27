@@ -56,21 +56,38 @@ async def main():
     from datasets import load_dataset
     from sentence_transformers import CrossEncoder, SentenceTransformer
 
-    print(f"loading HotpotQA distractor dev (first {N})...", flush=True)
-    ds = load_dataset("hotpotqa/hotpot_qa", "distractor", split="validation")
-    ds = ds.select(range(min(N, len(ds))))
-
+    # dataset switch: HotpotQA (saturated) or MuSiQue (harder, multi-hop-by-design)
+    dataset = os.environ.get("BENCH_MULTIHOP_DATASET", "hotpot")
     corpus: dict[str, str] = {}
     questions: list[tuple[str, str, set]] = []
-    for ex in ds:
-        ctx = ex["context"]
-        for title, sents in zip(ctx["title"], ctx["sentences"]):
-            corpus.setdefault(title, " ".join(sents))
-        gold = set(ex["supporting_facts"]["title"])
-        questions.append((ex["id"], ex["question"], gold))
+    if dataset == "musique":
+        print(f"loading MuSiQue validation (first {N})...", flush=True)
+        ds = load_dataset("dgslibisey/MuSiQue", split="validation")
+        ds = ds.select(range(min(N, len(ds))))
+        for ex in ds:
+            gold = set()
+            for p in ex["paragraphs"]:
+                title = p["title"]
+                corpus.setdefault(title, p["paragraph_text"])
+                if p.get("is_supporting"):
+                    gold.add(title)
+            questions.append((ex["id"], ex["question"], gold))
+    else:
+        print(f"loading HotpotQA distractor dev (first {N})...", flush=True)
+        ds = load_dataset("hotpotqa/hotpot_qa", "distractor", split="validation")
+        ds = ds.select(range(min(N, len(ds))))
+        for ex in ds:
+            ctx = ex["context"]
+            for title, sents in zip(ctx["title"], ctx["sentences"]):
+                corpus.setdefault(title, " ".join(sents))
+            gold = set(ex["supporting_facts"]["title"])
+            questions.append((ex["id"], ex["question"], gold))
     doc_ids = list(corpus)
     doc_texts = [corpus[t] for t in doc_ids]
-    print(f"corpus={len(doc_ids)} passages, questions={len(questions)}", flush=True)
+    print(
+        f"dataset={dataset} corpus={len(doc_ids)} passages questions={len(questions)}",
+        flush=True,
+    )
 
     embed_model = os.environ.get("BENCH_EMBED_MODEL", "BAAI/bge-m3")
     rerank_model = os.environ.get("BENCH_RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
