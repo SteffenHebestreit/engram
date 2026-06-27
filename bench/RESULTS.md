@@ -418,6 +418,51 @@ retrieval is hard.
 
 ---
 
+## Benchmark 3 — Agent-memory write-path (the unique-capability gate test)
+
+engram's one *structurally-unique* capability is the **write-path**: it learns
+from which chunks an agent actually used (`/feedback` + `mark_used`). A stateless
+RAG pipeline cannot do this. So we implemented the learning side — an associative
+**query→chunk memory boost** (a later query injects, into the rerank shortlist,
+chunks that were *used* for ≥`min_sim`-similar past queries) — and tested whether
+it improves retrieval. Protocol ([bench/memory_eval.py](memory_eval.py)): split the
+test queries into a HISTORY session (record its gold chunks as feedback, with the
+history query embeddings) and a held-out TEST set; compare WARM (memory on) vs COLD
+(memory off) per test query, paired sign test + bootstrap CI. Production stack,
+engramdb backend.
+
+| dataset | subset | cold nDCG@10 | warm nDCG@10 | ΔnDCG@10 | verdict |
+|---|---|---|---|---|---|
+| NFCorpus | all 130 test | 0.3438 | 0.3431 | −0.0007 | n.s. |
+| NFCorpus | memory-applicable (n=10) | 0.4233 | 0.4147 | −0.0086 | n.s. |
+| SciFact | all 120 test | 0.7278 | 0.7278 | 0.0000 | n.s. |
+| SciFact | memory-applicable (n=3) | 0.7103 | 0.7103 | 0.0000 | n.s. |
+
+**Honest negative — and the reason is structural, not a bug** (the mechanism is
+unit-tested and works):
+
+1. **With a strong embedder, base retrieval already finds the gold chunk**, so
+   re-injecting "what worked before" is redundant — exactly the graph's pattern.
+   On SciFact the warm/cold rankings are *identical* (0/120 changed).
+2. **In a pure retrieval benchmark, "used chunks = gold chunks = what base
+   retrieval targets"** — so memory can only help where base retrieval *fails*,
+   which a SOTA embedder rarely does. Memory has nothing to add that the embedder
+   didn't already retrieve.
+3. **BEIR queries are diverse one-shots, not the recurring workload agent-memory
+   targets** — only 10/130 (NFCorpus) and 3/120 (SciFact) test queries even had a
+   ≥0.7-similar past query sharing a gold doc.
+
+**Conclusion for the release gate:** the agent-memory *boost* does **not** deliver
+a measurable retrieval-quality edge on standard benchmarks with production models.
+Its genuine value is **operational**, not benchmark-nDCG: cross-session persistence
+of what worked, personalization, query-drift bridging, and latency/cost savings on
+recurring queries — none of which a static IR benchmark can score, and none of
+which is a "quality competitors can't match" claim we can *prove* here. It ships as
+an **opt-in operational capability** (`MEMORY_BOOST_ENABLED`), honestly, not as a
+quality differentiator.
+
+---
+
 ## Headline
 
 - **BEIR retrieval, production stack: engram beats naive vector RAG and BM25

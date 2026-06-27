@@ -6,6 +6,18 @@ All notable changes to **engram**. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **Agent-memory write-path — the learning side of `/feedback` (opt-in,
+  `MEMORY_BOOST_ENABLED`).** Until now feedback was only *recorded*; this implements
+  the learning: with the query embedding stored, a later query injects chunks that
+  were *used* for ≥`min_sim`-similar past queries into the rerank shortlist, so
+  retrieval can improve from real usage — a stateful signal stateless RAG can't
+  produce. New `Store.memory_candidates`; engramdb-first (neo4j/pgvector return
+  `[]`). **Honest measurement** ([bench/memory_eval.py](bench/memory_eval.py),
+  RESULTS §3): on standard benchmarks with a strong embedder it shows **no quality
+  edge** (warm≈cold, n.s.) — base retrieval already finds the gold chunk, so the
+  boost is redundant, and BEIR isn't a recurring-query workload. Ships as an
+  **operational** capability (cross-session memory, personalization, recurring-query
+  cost), **not** a benchmark-quality differentiator. Off by default; no regression.
 - **Engram-DB `b1` binary quantization (32× smaller vectors), quality-verified.**
   `ENGRAMDB_QUANTIZATION=b1` packs each vector to 1 bit/dim and retrieves in two
   stages — a `k`×16 **hamming shortlist** then an **exact-cosine rescore** of that
