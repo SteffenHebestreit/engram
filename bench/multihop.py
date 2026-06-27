@@ -156,12 +156,15 @@ async def main():
     store = create_store(get_settings())
     await store.connect()
     await store.init_schema()
-    # start clean (the shared bench db may carry data from a prior run)
-    async with store._driver.session() as session:
-        await session.run(
-            "MATCH (n) WHERE n:Chunk OR n:Document OR n:Keyword OR n:Community "
-            "DETACH DELETE n"
-        )
+    # start clean (the shared bench db may carry data from a prior run). Neo4j is
+    # wiped via the driver; other backends (pgvector) are run on a fresh DB
+    # instead, so this is a neo4j-only convenience, guarded for backend-agnostic use.
+    if getattr(store, "_driver", None) is not None:
+        async with store._driver.session() as session:
+            await session.run(
+                "MATCH (n) WHERE n:Chunk OR n:Document OR n:Keyword OR n:Community "
+                "DETACH DELETE n"
+            )
 
     t0 = time.perf_counter()
     for i, did in enumerate(doc_ids):
