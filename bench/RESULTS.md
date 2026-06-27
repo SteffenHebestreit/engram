@@ -381,11 +381,17 @@ bridge-linked passage. HotpotQA distractor dev, 500 questions, 4,937 passages.
 | **engram · engramdb (decay)** | 0.8410 | 0.9370 | 0.9670 |
 
 Paired per-question (sign test + bootstrap 95%CI): engram − dense+rerank
-ΔRecall@5 = 0.000, engram − hybrid+rerank = −0.003/−0.004 — **all n.s.** (p > 0.4,
-~490/500 queries tie). With a strong embedder the graph has nothing left to
-recover, so it neither helps nor hurts significantly. And **engramdb (decay, no
-PPR) ties Neo4j (PPR)** at ~2× speed (ingest 122 s vs 260 s) — dropping PageRank
-costs nothing on multi-hop.
+ΔRecall@5 = 0.000, engram − hybrid+rerank = −0.003/−0.004 — **all n.s.** (sign-p
+0.16–1.0, all > 0.05; ~490/500 queries tie). With a strong embedder the graph has
+nothing left to recover, so it neither helps nor hurts significantly. And
+**engramdb (decay, no PPR) ties Neo4j (PPR)** — ~2× faster ingest (122 vs 260 s),
+~1.3× faster query — dropping PageRank costs nothing on multi-hop.
+
+**Confirmed on MuSiQue** (harder, less-saturated multi-hop; bge-m3 stack, engramdb,
+n=500): dense+rerank R@5 0.5910 / hybrid+rerank 0.5930 / engram 0.5920 — engram −
+dense+rerank ΔR@5 +0.001 (n.s., 488/500 tie), engram − hybrid+rerank −0.001 (n.s.).
+The graph-is-neutral-with-a-strong-embedder finding holds on a second multi-hop
+dataset, so it is not a HotpotQA artifact.
 
 ### Floor stack (MiniLM + ms-marco, CPU)
 
