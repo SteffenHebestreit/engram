@@ -196,10 +196,14 @@ class Settings(BaseSettings):
     # relations loaded via the /graph/entities + /graph/relations endpoints
     graph_profile: GraphProfile | None = None
 
-    # graph proximity: "ppr" = personalized PageRank over the chunk/keyword
-    # graph via Neo4j GDS (falls back to "decay" when GDS is unavailable),
-    # "decay" = fixed per-hop decay
-    graph_proximity_mode: str = "ppr"
+    # graph proximity: "decay" = fixed per-hop decay (default), "ppr" =
+    # personalized PageRank over the chunk/keyword graph via Neo4j GDS (falls back
+    # to decay when GDS is unavailable). Default is "decay": benchmarks (HotpotQA +
+    # MuSiQue) showed PPR adds no measurable quality over decay while being the
+    # single most expensive, fastest-growing store op (~65% of latency at 20k docs,
+    # needing the GDS plugin). Opt into "ppr" only if your corpus proves it helps.
+    # See docs/engram-db.md.
+    graph_proximity_mode: str = "decay"
     ppr_damping: float = 0.85
 
     # per-channel weights when fusing the default three vector indexes; these

@@ -48,7 +48,7 @@ skipped, never fatal).
 | Channel embed-source | `CHANNEL_SOURCES` | (per channel `source`) | `text`/`summary`/`keywords` | [app/channels.py](../app/channels.py) |
 | Score fusion | `FUSIONS` | `FUSION_STRATEGY` | `dbsf_convex` | [app/pipeline.py](../app/pipeline.py) |
 | Graph expansion | `EXPANDERS` | `EXPANDER_STRATEGY` | `sequence_keyword` | [app/pipeline.py](../app/pipeline.py) |
-| Graph proximity | `PROXIMITIES` | `GRAPH_PROXIMITY_MODE` | `ppr` (→ `decay`) | [app/pipeline.py](../app/pipeline.py) |
+| Graph proximity | `PROXIMITIES` | `GRAPH_PROXIMITY_MODE` | `decay` (`ppr` opt-in) | [app/pipeline.py](../app/pipeline.py) |
 | Reranker | `RERANKERS` | `RERANKER_STRATEGY` | `http` | [app/rerank.py](../app/rerank.py) |
 
 ### Chunker
@@ -72,9 +72,11 @@ expander could walk typed domain relations (see *Special graphs* below).
 
 ### Proximity
 `async (store, seed_ids, siblings, settings) -> list[float]` parallel to
-`siblings`. Built-ins: `ppr` (graph-activation proximity — Personalized PageRank
-on the neo4j backend — with a per-sibling decay fallback when the store reports
-no proximity capability) and `decay`.
+`siblings`. Built-ins: `decay` (fixed per-hop fade — the **default**) and `ppr`
+(graph-activation proximity — Personalized PageRank on the neo4j backend, with a
+per-sibling decay fallback when the store reports no proximity capability). PPR is
+opt-in: benchmarks showed it matches decay on quality while being far more
+expensive at scale (see [engram-db.md](engram-db.md)).
 
 ### Reranker
 `async (client, query, texts) -> list[float] | None`, one score per text in

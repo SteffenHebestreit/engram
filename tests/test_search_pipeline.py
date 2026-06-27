@@ -198,6 +198,8 @@ async def test_sparse_disabled_makes_no_extra_store_read(patched, monkeypatch):
 
 
 async def test_ppr_proximity_replaces_decay(patched, monkeypatch):
+    patched.graph_proximity_mode = "ppr"  # default is now "decay"; opt into PPR here
+
     async def fake_ppr(driver, seed_ids, candidate_ids, damping):
         return {"D": 0.9, "E": 0.55}
 
