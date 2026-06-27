@@ -11,6 +11,29 @@ Two ways to run engram, same pipeline:
 It is a drop-in because everything already talks to the `Store` protocol
 ([app/store.py](../app/store.py)); `search.py` / `ingest.py` don't change.
 
+## TL;DR — evaluation verdict (2026-06-27)
+
+A full eval campaign (latency profiling + scale sweep + quality on SciFact,
+HotpotQA, MuSiQue + a chunking ablation, all on local CPU models) settled the
+store question and reshaped the Engram-DB design:
+
+1. **Default to pgvector + `GRAPH_PROXIMITY_MODE=decay`.** pgvector beats Neo4j on
+   standard retrieval (SciFact nDCG@10 0.749 vs 0.733), ties on multi-hop, runs
+   faster end-to-end at every scale, and needs only Postgres. Keep Neo4j only for
+   its unique features (communities, entity graph, deeper recall@100).
+2. **Drop PPR.** Personalized PageRank adds **zero** quality over trivial decay
+   (confirmed on saturated *and* non-saturated multi-hop) yet is Neo4j's
+   fastest-growing latency cost (graph stage 46→145 ms from 2k→20k docs).
+3. **Engram-DB design:** skip PageRank entirely; the **graph/keyword-sibling
+   expansion is the real scaling bottleneck on both backends** (the dominant cost
+   at 20k) — that's what a custom engine must make efficient (bounded fan-out,
+   indexed joins), not the vector ANN. Compose embedded engines, don't write a DBMS.
+4. **Chunking:** don't over-split coherent docs (engram's default size is good);
+   NEXT_CHUNK's value is context-completeness, not doc-rank (needs a chunk-level
+   metric to quantify — still open).
+
+Details, tables, and caveats below.
+
 ## Decision discipline: profile before building
 
 A custom store can only speed up what an engine owns — the **store** queries and
