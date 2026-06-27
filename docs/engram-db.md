@@ -102,6 +102,39 @@ the **vector + lexical + rerank** path):
   communities, entity graph) — which SciFact does not exercise. Whether that earns
   Neo4j's 2× latency is the multi-hop question (below).
 
+### Quality (real pipeline, HotpotQA multi-hop — the graph's home turf)
+
+`bench/multihop.py`, 250 questions, 2477 passages, MiniLM-384 + ms-marco, full
+graph pipeline (YAKE keywords → `HAS_KEYWORD` graph; passages are single-chunk so
+no `NEXT_CHUNK`). Recall of the supporting passages:
+
+| system | Recall@2 | Recall@5 | Recall@10 |
+|---|---|---|---|
+| bm25 | 0.494 | 0.654 | 0.832 |
+| dense | 0.540 | 0.732 | 0.846 |
+| dense+rerank | 0.684 | 0.814 | 0.908 |
+| engram — Neo4j + **PPR** | 0.690 | **0.838** | **0.932** |
+| engram — Neo4j + **decay** | 0.690 | **0.838** | **0.932** |
+| engram — pgvector + decay | 0.684 | 0.820 | 0.914 |
+
+Two decision-changing results:
+1. **PPR == decay, to the digit.** Personalized PageRank — Neo4j's signature
+   capability and *the single most expensive store operation* (the profiler's
+   heaviest cost) — adds **zero** quality over simple per-hop decay here. The
+   graph *expansion* (pulling in keyword-siblings) is what lifts engram over
+   dense+rerank (+2.4 pt Recall@5/@10); the expensive *proximity algorithm* on top
+   contributes nothing measurable.
+2. **pgvector + decay nearly matches Neo4j** (0.914 vs 0.932 @10; within ~1.8 pt),
+   capturing most of the graph-expansion benefit through its SQL keyword-sibling
+   join — no GDS required.
+
+**Caveat (important):** HotpotQA + MiniLM is a *saturated* setup — dense already
+hits Recall@10 0.846, so most gold is directly retrieved and graph/proximity have
+little headroom. The honest test of whether PPR ever earns its cost is a
+**non-saturated** multi-hop set (2WikiMultiHopQA / MuSiQue) and/or **chunked**
+documents (where `NEXT_CHUNK` engages) — not yet run. Treat "drop PPR" as
+*strongly indicated, pending that confirmation*.
+
 ### Latency (profiler, synthetic corpus)
 
 Same profiler, same synthetic corpus, `--fake-models`, mean ms/query:
@@ -130,21 +163,30 @@ fallback), the **community/theme layer**, and the **structured-entity graph**.
 Multi-tenancy, recency, contextual retrieval, learned-sparse, and sibling
 expansion work on both.
 
-**Recommendation for the current state of the project: stay on Neo4j as the
-default.** The graph layer (PPR-in-the-ranker, communities, entity graph) is
-engram's headline differentiator (see [competitive-scorecard.md](competitive-scorecard.md)),
-the project is still establishing that moat, and at today's corpus sizes the gap
-is tens of ms — quality/features win over raw speed now.
+**Recommendation (updated by the quality evals — reverses the earlier
+latency-only call).** The data now points to **pgvector + decay as the strong
+default for the current state**:
+- it **beats** Neo4j on standard retrieval top-k (SciFact nDCG@10 0.749 vs 0.733)
+  and **nearly matches** it on multi-hop (0.914 vs 0.932 @10),
+- at **~2× the speed** (ingest + query) and far simpler ops (Postgres only, no
+  Neo4j + GDS),
+- and **PPR — the costliest store op — buys no measurable quality** over decay, so
+  Neo4j's signature feature isn't paying its way on these benchmarks.
 
-**Choose pgvector when** ops simplicity dominates (you already run Postgres — one
-fewer system than Neo4j+GDS), the corpus is large (better latency scaling), or the
-workload is plain hybrid retrieval where PPR tends to wash out at the reranker
-anyway (our BEIR finding). It's a first-class lighter alternative, not a downgrade
-for those cases.
+So: default to **pgvector**, and set **`GRAPH_PROXIMITY_MODE=decay`** (don't pay
+for GDS PageRank until a corpus proves it helps).
 
-**Caveat:** this compares *latency + features*. Whether PPR/communities lift
-*quality* on your corpus needs a real `/eval` with live endpoints (gated here) —
-run it before dropping the graph for a connected/multi-hop corpus.
+**Stay on Neo4j when** you specifically need what only it offers: the
+**community/theme layer** (global "what are the themes" search), the
+**structured-entity graph**, or deeper candidate recall (Recall@100 0.970 vs
+0.915 — or just raise pgvector's `ef_search`). These are real but
+workload-specific, not the default.
+
+**Caveat:** measured on MiniLM + *saturated* benchmarks. Confirm on a
+non-saturated multi-hop set (2Wiki/MuSiQue) and chunked docs (where `NEXT_CHUNK`
+engages) before making "pgvector default / drop PPR" permanent — that's the one
+remaining quality gap. Also: communities/entity-graph value is unmeasured (no
+bench yet).
 
 ## Status
 
