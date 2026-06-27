@@ -81,6 +81,30 @@ long-document set (or a customer corpus via `POST /eval`), A/B `dedup`/overlap a
 a future `semantic` chunker to *quantify* the "chunking is a robustness property"
 claim (RESULTS §"the architecture, not the models").
 
+### 5. Contextual Retrieval (needs an LLM at ingest + a multi-doc corpus)
+
+`CONTEXTUAL_RETRIEVAL_ENABLED=true` prepends an LLM-written document-situating
+context to each chunk before embedding (Anthropic reports **−35% retrieval
+failures** for contextual embeddings, **−49%** with contextual BM25 too). It is a
+**geometry** change — it disambiguates near-identical chunks across *different*
+documents — so **BEIR can't show it**: SciFact/NFCorpus docs are single-chunk, so
+there is no within-corpus ambiguity for the context to resolve. Measure on a
+**long-document, multi-document** corpus (or a customer corpus via `POST /eval`)
+where the same phrasing recurs across documents:
+
+```bash
+# A/B over a long-doc corpus: baseline vs contextual embeddings.
+# Needs LLM_API_BASE reachable at ingest (one extra call per chunk).
+#   ingest twice (CONTEXTUAL_RETRIEVAL_ENABLED false / true) into separate
+#   stores, then POST /eval the same golden set against each.
+```
+
+**Decision rule:** report the nDCG@10 / recall@10 delta from engram's own
+`/eval` (judge-free) — claim a win only if it clears the baseline beyond the
+bootstrap CI. Then build **contextual BM25** (fold the context into the fulltext
+index) for the bigger reported jump. Until measured on such a corpus it ships as
+an opt-in feature with the citation, not a claimed number.
+
 ## Also worth doing on the bigger box
 
 - **Local generative LLM** (the unified memory fits a 14–32B model): unblocks the

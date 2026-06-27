@@ -141,6 +141,21 @@ class Settings(BaseSettings):
     # produces a one-sentence summary + keywords per chunk
     metadata_extractor: str = "default"
 
+    # Contextual Retrieval (Anthropic): at ingest, an LLM writes a short
+    # document-situating context per chunk, prepended to the chunk before
+    # embedding so its vector encodes document-level identity (which entity /
+    # section / period it belongs to) instead of just the bare chunk. A geometry
+    # change the reranker can't overwrite; complementary to NEXT_CHUNK expansion
+    # (doc-level identity baked in at index time vs. neighbour context at read
+    # time). Opt-in: costs one extra LLM call per fresh chunk at ingest. Changes
+    # the stored content vectors, so it is part of the schema signature.
+    contextual_retrieval_enabled: bool = False
+    # cap on document chars sent as context per chunk call (bounds cost/payload
+    # for very large documents; the chunk itself is always sent in full)
+    contextual_max_doc_chars: int = 100_000
+    # output cap for the generated context (a short 1-2 sentence situating blurb)
+    contextual_max_tokens: int = 160
+
     # ingestion throughput: parallel LLM metadata calls; embedding requests
     # are split into batches (servers cap per-request batch size) with a
     # bounded number in flight

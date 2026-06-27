@@ -76,6 +76,11 @@ def schema_signature(settings: Any) -> str:
     # actually configured.
     if settings.passage_instruction:
         payload["passage_instruction"] = settings.passage_instruction
+    # Contextual Retrieval prepends an LLM-written context to each chunk before
+    # embedding, so the stored content vectors differ; toggling it must invalidate
+    # existing indexes. Added only when enabled, so the default case is unchanged.
+    if getattr(settings, "contextual_retrieval_enabled", False):
+        payload["contextual_retrieval"] = True
     raw = json.dumps(payload, sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()
 

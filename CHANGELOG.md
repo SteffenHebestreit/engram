@@ -5,7 +5,17 @@ All notable changes to **engram**. Format loosely follows
 
 ## [Unreleased]
 
-Three feature branches built and tested, awaiting merge:
+Feature branches built and tested, awaiting merge:
+
+- **Contextual Retrieval** (`CONTEXTUAL_RETRIEVAL_ENABLED`, opt-in) — Anthropic's
+  technique: at ingest an LLM writes a short document-situating context per chunk,
+  prepended before embedding so the content vector encodes document-level identity
+  (which entity/section/period it belongs to) instead of just the bare passage.
+  A change to the embedding *geometry* — the one layer a reranker can't overwrite —
+  and complementary to `NEXT_CHUNK` expansion (doc identity baked in at index time
+  vs. neighbour context at read time). Degrades to the bare chunk when the LLM is
+  down; part of the schema signature. Wired through the existing `CHANNEL_SOURCES`
+  seam (search untouched). Branch `contextual-retrieval`.
 
 - **Reranker sidecar** (`deploy/reranker`) — serves Qwen3-Reranker in engram's
   reranker wire format, since TEI can't serve its causal-LM format. The measured

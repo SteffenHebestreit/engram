@@ -30,6 +30,13 @@ class ExtractionResult(dict):
     def summary(self) -> str:
         return self["summary"]
 
+    @property
+    def context(self) -> str:
+        # Contextual Retrieval: a short document-situating context generated at
+        # ingest and prepended to the chunk before embedding. Empty unless
+        # contextual retrieval is enabled. Optional, so older results omit it.
+        return self.get("context", "")
+
 
 class MetadataExtractor(Protocol):
     """A per-chunk metadata strategy.
@@ -169,6 +176,64 @@ async def generate_hypothetical_answer(
         return text or None
     except Exception:
         return None
+
+
+_CONTEXT_SYSTEM_PROMPT = """\
+You situate a text chunk within its source document for a retrieval system
+(Contextual Retrieval). Given the whole document and one chunk taken from it,
+write a SHORT context (1-2 sentences) that says what the chunk is about and how
+it fits the document — name the entities, section, time period or topic a search
+would need to find it. This text is prepended to the chunk before embedding, to
+disambiguate it from similar passages in other documents.
+Reply with the context only: no preamble, no markdown, do not repeat the chunk."""
+
+
+async def generate_chunk_context(
+    client: httpx.AsyncClient, document: str, chunk: str
+) -> str:
+    """A short document-situating context for a chunk (Anthropic's Contextual
+    Retrieval). Prepended to the chunk before embedding so its vector encodes the
+    document-level identity a bare chunk lacks.
+
+    Returns "" on any failure (or an empty reply), so ingest degrades to the
+    plain chunk embedding instead of breaking when the LLM is unavailable — same
+    contract as HyDE / metadata extraction.
+
+    The document is sent first (a long prefix shared by every chunk of the same
+    document) so providers that cache prompt prefixes amortize it across the
+    document's chunks; the per-document cost is otherwise one LLM call per chunk.
+    """
+    settings = get_settings()
+    doc = document[: settings.contextual_max_doc_chars]
+    user = (
+        f"<document>\n{doc}\n</document>\n\n"
+        f"Here is the chunk to situate within the document:\n"
+        f"<chunk>\n{chunk}\n</chunk>"
+    )
+
+    headers = {}
+    if settings.llm_api_key:
+        headers["Authorization"] = f"Bearer {settings.llm_api_key}"
+
+    try:
+        resp = await client.post(
+            f"{settings.llm_api_base.rstrip('/')}/chat/completions",
+            json={
+                "model": settings.llm_model,
+                "temperature": 0.2,
+                "max_tokens": settings.contextual_max_tokens,
+                "messages": [
+                    {"role": "system", "content": _CONTEXT_SYSTEM_PROMPT},
+                    {"role": "user", "content": user},
+                ],
+            },
+            headers=headers,
+            timeout=settings.request_timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception:
+        return ""
 
 
 _COMMUNITY_REPORT_SYSTEM_PROMPT = """\
