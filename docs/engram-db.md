@@ -17,17 +17,24 @@ A full eval campaign (latency profiling + scale sweep + quality on SciFact,
 HotpotQA, MuSiQue + a chunking ablation, all on local CPU models) settled the
 store question and reshaped the Engram-DB design:
 
-1. **Default to pgvector + `GRAPH_PROXIMITY_MODE=decay`.** pgvector beats Neo4j on
-   standard retrieval (SciFact nDCG@10 0.749 vs 0.733), ties on multi-hop, runs
-   faster end-to-end at every scale, and needs only Postgres. Keep Neo4j only for
-   its unique features (communities, entity graph, deeper recall@100).
-2. **Drop PPR.** Personalized PageRank adds **zero** quality over trivial decay
-   (confirmed on saturated *and* non-saturated multi-hop) yet is Neo4j's
-   fastest-growing latency cost (graph stage 46→145 ms from 2k→20k docs).
-3. **Engram-DB design:** skip PageRank entirely; the **graph/keyword-sibling
-   expansion is the real scaling bottleneck on both backends** (the dominant cost
-   at 20k) — that's what a custom engine must make efficient (bounded fan-out,
-   indexed joins), not the vector ANN. Compose embedded engines, don't write a DBMS.
+1. **Drop PPR — the one unambiguous win.** Set `GRAPH_PROXIMITY_MODE=decay`:
+   Personalized PageRank adds **zero** quality over trivial decay (confirmed on
+   *saturated* HotpotQA **and** *non-saturated* MuSiQue) yet is the biggest,
+   fastest-growing store cost — **~65% of latency at 20k; removing it makes Neo4j
+   2.7× faster** (178→67 ms). Applies to any backend.
+2. **Backend choice is scale-dependent (decay vs decay; quality ~tied).** The
+   earlier "pgvector is ~2× faster" was an artifact of comparing against Neo4j+PPR.
+   Fair comparison: **pgvector wins at small scale** (28 vs 52 ms @2k, simpler ops)
+   but **Neo4j+decay scales far better and wins large** (67 vs 131 ms @20k — Neo4j
+   nearly flat, pgvector grows steeply). And Neo4j+decay needs **no GDS**, so its
+   ops gap mostly disappears. Quality: pgvector slightly better SciFact top-k
+   (0.749 vs 0.733), Neo4j slightly better multi-hop recall — a wash. Pick by
+   scale + which DB you already run; keep Neo4j for communities / entity graph.
+3. **Engram-DB design:** skip PageRank; the **graph/keyword-sibling expansion is
+   the scaling bottleneck**, and **native graph adjacency beats a SQL self-join at
+   scale** (Neo4j's traversal grew 20→29 ms vs pgvector's join 11→85 ms). So a
+   custom engine should use native adjacency + skip PPR — compose embedded engines,
+   don't write a DBMS.
 4. **Chunking:** don't over-split coherent docs (engram's default size is good);
    NEXT_CHUNK's value is context-completeness, not doc-rank (needs a chunk-level
    metric to quantify — still open).
@@ -217,19 +224,35 @@ Mean ms/query, per-doc jargon corpus (sparse keyword graph), models excluded:
 | ├─ graph (siblings ± PPR) | 46 | 11 | **145** | 85 |
 | CPU/other | 6 | 5 | 7 | 5 |
 
-What scales (and what doesn't):
-- **pgvector is faster end-to-end at every size** (28 vs 78 @2k; 131 vs 178 @20k),
-  though the relative gap narrows with scale (2.8× → 1.36×).
-- **The graph stage is the scaling bottleneck on *both* backends** — it dominates
-  at 20k (Neo4j 145/178 = 81%; pgvector 85/131 = 65%). The keyword-sibling
-  expansion grows with corpus size on each. **This, not the vector ANN, is the #1
-  thing Engram-DB must make efficient at scale** (bounded fan-out, indexed joins).
-- **Neo4j's graph grows fastest** (46 → 145 ms) — that extra growth is PPR/GDS, the
-  op proven to add zero quality. (A neo4j+decay run at 20k decomposes siblings vs
-  PPR — see below.)
-- **Surprise reversal in vector retrieval at scale:** Neo4j's vector index stays
-  flat (26 → 26 ms) while pgvector's HNSW grows (12 → 40 ms) and *overtakes* it.
-  pgvector's deep recall + retrieval cost is `ef_search`-bound — tune it at scale.
+The Neo4j columns above run its **default `ppr`**. That is the confound: PPR
+dominates and grows. The PPR decomposition (Neo4j 20k, `GRAPH_PROXIMITY_MODE=decay`):
+
+| Neo4j 20k | end-to-end | graph |
+|---|---|---|
+| +PPR (default) | 178 | 145 |
+| **+decay (PPR off)** | **67** | **29** |
+
+→ **PPR costs ~115 ms (≈65% of latency) at 20k for zero quality** — dropping it
+makes Neo4j **2.7× faster**. So the fair comparison is **decay vs decay**:
+
+| decay vs decay | Neo4j 2k | pgvector 2k | Neo4j 20k | pgvector 20k |
+|---|---|---|---|---|
+| **end-to-end** | 52 | **28** | **67** | 131 |
+| ├─ retrieval | 26 | 12 | 30 | 40 |
+| ├─ graph | 20 | 11 | 29 | 85 |
+
+What this actually shows (corrects the earlier "pgvector is ~2× faster" call,
+which was comparing pgvector+decay against Neo4j+**PPR**):
+- **There is a crossover.** pgvector wins at small scale (28 vs 52 @2k); **Neo4j
+  wins at large scale (67 vs 131 @20k) and scales far better** — Neo4j is nearly
+  flat (52→67 over 10× data) while pgvector grows steeply (28→131).
+- **Why:** pgvector's HNSW retrieval grows (12→40) *and* its SQL keyword-sibling
+  join grows hard (11→85); Neo4j's vector index (26→30) and native graph traversal
+  (20→29) barely move. **Native graph adjacency beats a SQL self-join at scale.**
+- **The graph/sibling-expansion stage is still the scaling bottleneck** — but
+  Neo4j's traversal handles it ~3× better than pgvector's join at 20k. **Engram-DB
+  lesson: use native graph adjacency, not SQL joins, and skip PPR.**
+- **Drop PPR is the one unambiguous win** (2.7× faster, zero quality, any backend).
 
 The earlier (dense ~40-word vocab) latency numbers over-stated the graph stage on
 both backends and are superseded by this realistic-corpus sweep.
@@ -239,31 +262,35 @@ fallback), the **community/theme layer**, and the **structured-entity graph**.
 Multi-tenancy, recency, contextual retrieval, learned-sparse, and sibling
 expansion work on both.
 
-**Recommendation (updated by the quality evals — reverses the earlier
-latency-only call).** The data now points to **pgvector + decay as the strong
-default for the current state**:
-- it **beats** Neo4j on standard retrieval top-k (SciFact nDCG@10 0.749 vs 0.733)
-  and **nearly matches** it on multi-hop (0.914 vs 0.932 @10),
-- at **~2× the speed** (ingest + query) and far simpler ops (Postgres only, no
-  Neo4j + GDS),
-- and **PPR — the costliest store op — buys no measurable quality** over decay, so
-  Neo4j's signature feature isn't paying its way on these benchmarks.
+**Recommendation (final — corrected after the PPR decomposition).**
 
-So: default to **pgvector**, and set **`GRAPH_PROXIMITY_MODE=decay`** (don't pay
-for GDS PageRank until a corpus proves it helps).
+1. **Drop PPR, set `GRAPH_PROXIMITY_MODE=decay`** — the one unambiguous, backend-
+   independent win: zero quality cost (HotpotQA + MuSiQue), and it removes ~65% of
+   latency at 20k (Neo4j 178→67 ms). PPR/GDS is dead weight; decay is the default.
 
-**Stay on Neo4j when** you specifically need what only it offers: the
-**community/theme layer** (global "what are the themes" search), the
-**structured-entity graph**, or deeper candidate recall (Recall@100 0.970 vs
-0.915 — or just raise pgvector's `ef_search`). These are real but
-workload-specific, not the default.
+2. **Then the backend is a scale + ops choice, not a clear winner** (quality ties
+   with decay; SciFact top-k slightly favours pgvector, multi-hop recall slightly
+   favours Neo4j):
+   - **Small / simple deployments → pgvector.** Faster at small scale (28 vs 52 ms
+     @2k) and one system (Postgres) if you don't otherwise run Neo4j.
+   - **Large corpora / agent-memory at scale → Neo4j + decay.** It scales far
+     better (nearly flat 52→67 ms vs pgvector 28→131 ms over 10× data) because
+     native graph traversal + its vector index beat pgvector's SQL keyword-join +
+     HNSW as the corpus grows. With PPR gone, **Neo4j+decay needs no GDS**, so the
+     ops gap largely closes.
+   - **Communities / entity graph** remain Neo4j-only either way.
 
-**Confidence:** the "drop PPR" call is now confirmed on **both** a saturated
-(HotpotQA) and a non-saturated (MuSiQue) multi-hop benchmark — not a saturation
-artifact. Open (smaller) gaps: the `NEXT_CHUNK` chunking thesis (needs a
-long-document corpus; a *separate* claim), communities/entity-graph quality (no
-bench yet), and absolute numbers under the production embedder (BGE-M3, gated on
-GPU) — none of which is expected to change the cross-backend *deltas*.
+This *corrects* the earlier "pgvector is the strong default / ~2× faster" call,
+which compared pgvector+decay against Neo4j running **PPR by default** — an unfair
+baseline. Apples-to-apples (decay vs decay), it's a scale-dependent crossover.
+
+**Confidence:** "drop PPR" is confirmed on saturated (HotpotQA) + non-saturated
+(MuSiQue) multi-hop, and the latency cost is decomposed at scale — high. The
+backend crossover is from one synthetic-corpus sweep (fake models) — directional,
+worth confirming with real models + a real corpus. Open gaps: `NEXT_CHUNK`
+chunking thesis (needs a long-doc corpus + chunk-level metric), communities/
+entity-graph quality (no bench), BGE-M3 absolute numbers (GPU) — none expected to
+change these deltas.
 
 ## Status
 
