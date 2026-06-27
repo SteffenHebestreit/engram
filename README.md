@@ -425,7 +425,7 @@ Everything is a `.env` variable, with sane defaults and zero code changes:
 | `RETRIEVAL_WEIGHT` / `MEDIAN_WEIGHT` / `GRAPH_PROXIMITY_WEIGHT` | 0.55 / 0.30 / 0.15 | the total-score recipe |
 | `CONTENT/SUMMARY/KEYWORDS/FULLTEXT_CHANNEL_WEIGHT` | 1.0 / 0.9 / 0.8 / 0.7 | how loud each librarian speaks |
 | `SEQUENCE_MAX_HOPS` | 3 | how many pages before/after to consider |
-| `GRAPH_PROXIMITY_MODE` | `ppr` | `ppr` = ink-drop, `decay` = fixed per-hop fade |
+| `GRAPH_PROXIMITY_MODE` | `decay` | `decay` = fixed per-hop fade (default), `ppr` = ink-drop (opt-in; adds cost, no measured quality gain) |
 | `SEQUENCE_PROXIMITY_DECAY` | 0.7 | per-hop fade in `decay` mode |
 | `MMR_LAMBDA` | 0.7 | relevance vs. diversity on the shortlist |
 | `AUTOCUT_MIN_GAP` / `AUTOCUT_MIN_KEEP` | 0.25 / 3 | how steep a cliff cuts, floor of kept results |
