@@ -349,9 +349,17 @@ pip install -r requirements-mcp.txt
 ENGRAM_API_BASE=http://localhost:8088 python -m app.mcp_server   # stdio
 ```
 
-It exposes `search`, `get_chunk_context`, `list_documents` and `search_themes`
-as MCP tools (a thin proxy over the HTTP API above — same store, same pipeline).
-engram does not generate answers; it feeds the calling agent perfect context.
+It exposes `search`, `get_chunk_context`, `list_documents`, `search_themes` and
+`mark_used` as MCP tools (a thin proxy over the HTTP API above — same store, same
+pipeline). engram does not generate answers; it feeds the calling agent perfect
+context.
+
+**It also learns from use.** After an agent answers, it calls `mark_used` (or
+`POST /feedback`) with the chunk ids it actually grounded the answer on. engram
+records those (query → used-chunk) positives so an offline job can mine hard
+negatives and tune fusion weights — an **agent-in-the-loop learning signal a
+stateless retriever can't capture**. It's the foundation of a flywheel: the more
+agents use engram, the better its ranking gets on *your* traffic.
 
 ### Prove it on your own corpus (`POST /eval`)
 

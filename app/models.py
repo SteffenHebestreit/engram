@@ -110,6 +110,20 @@ class EvalResponse(BaseModel):
     attribution: ChannelAttribution
 
 
+class FeedbackRequest(BaseModel):
+    """Implicit-relevance feedback: which chunks an agent actually grounded its
+    answer on for a query (the agent-in-the-loop learning signal)."""
+    query: str = Field(min_length=1)
+    used_chunk_ids: list[str] = Field(min_length=1)
+    # optional caller handle to correlate with its own logs
+    query_id: str | None = None
+
+
+class FeedbackResponse(BaseModel):
+    # how many (query -> chunk) positives were recorded (chunks that exist)
+    recorded: int
+
+
 class ContextChunk(BaseModel):
     chunk_id: str
     document_id: str

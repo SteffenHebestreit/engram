@@ -142,6 +142,17 @@ class Store(Protocol):
         so a backend that can't supply ages returns `{}`."""
         ...
 
+    async def record_feedback(
+        self, query: str, used_chunk_ids: list[str], query_id: str | None = None
+    ) -> int:
+        """Record that `used_chunk_ids` were the chunks an agent actually grounded
+        its answer on for `query` (implicit-relevance feedback). Persists the
+        (query → used-chunk) positives durably so an offline job can later mine
+        hard negatives + tune fusion weights — the agent-in-the-loop learning
+        signal a stateless retriever can't capture. Returns how many links were
+        recorded (chunks that exist in the store)."""
+        ...
+
     async def graph_proximity(
         self, seed_ids: list[str], candidate_ids: list[str], damping: float
     ) -> dict[str, float] | None:

@@ -647,6 +647,36 @@ async def get_sparse_weights(
         return out
 
 
+async def record_feedback(
+    driver: AsyncDriver,
+    query: str,
+    used_chunk_ids: list[str],
+    query_id: str | None = None,
+) -> int:
+    """Persist implicit-relevance feedback: a Feedback event linked to the chunks
+    an agent grounded its answer on (`(:Feedback)-[:USED]->(:Chunk)`). The
+    positives an offline job mines for hard negatives + weight tuning."""
+    if not used_chunk_ids:
+        return 0
+    async with driver.session() as session:
+        result = await session.run(
+            """
+            CREATE (f:Feedback {query: $query, query_id: $query_id,
+                                created_at: datetime()})
+            WITH f
+            UNWIND $ids AS cid
+            MATCH (c:Chunk {id: cid})
+            MERGE (f)-[:USED]->(c)
+            RETURN count(c) AS n
+            """,
+            # pass params as a dict: session.run()'s first positional is named
+            # `query` (the Cypher string), so a `query=` kwarg would collide
+            {"query": query, "query_id": query_id, "ids": used_chunk_ids},
+        )
+        record = await result.single()
+        return record["n"]
+
+
 async def get_near_dup_links(
     driver: AsyncDriver, chunk_ids: list[str]
 ) -> dict[str, str]:
