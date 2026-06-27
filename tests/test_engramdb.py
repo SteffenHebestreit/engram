@@ -210,6 +210,53 @@ async def test_b1_rescore_shortlist_is_load_bearing():
     await store.close()
 
 
+async def test_agent_memory_candidates():
+    """Agent-memory write-path: feedback recorded WITH a query embedding lets a
+    later *similar* query recall the chunks that were used — and a dissimilar query
+    recalls nothing. This is the learning signal a stateless retriever can't make."""
+    rng = np.random.RandomState(7)
+    n = 30
+    vecs = rng.normal(size=(n, DIM)).astype(np.float32)
+    vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
+    chunks = [
+        {"id": f"c{i}", "seq": i, "text": f"c{i}", "summary": "", "keywords": [],
+         "embeddings": {"content_embedding": vecs[i].tolist()}}
+        for i in range(n)
+    ]
+    store = EngramDBStore()
+    await store.connect()
+    await store.init_schema()
+    await store.save_document("d", "t", ["s"], chunks)
+
+    # a past query q1 (some direction) for which the agent *used* chunk c5
+    q1 = rng.normal(size=DIM).astype(np.float32)
+    q1 /= np.linalg.norm(q1)
+    assert await store.record_feedback("q1", ["c5"], "qid1", query_embedding=q1.tolist()) == 1
+    # feedback recorded WITHOUT an embedding must not pollute memory recall
+    assert await store.record_feedback("q0", ["c9"]) == 1
+
+    # a genuinely-similar later query recalls c5 with high memory_score. Build it
+    # as a controlled blend (a small noise vector orthogonal to q1), so cosine is
+    # ~0.99 — note: in 1024-d, `q1 + 0.05*normal` is NOT similar (the noise norm
+    # ~1.6 dominates), which is exactly why query-query cosine gating matters.
+    nz = rng.normal(size=DIM).astype(np.float32)
+    nz -= (nz @ q1) * q1
+    nz /= np.linalg.norm(nz) or 1.0
+    q_sim = 0.9 * q1 + 0.1 * nz
+    q_sim /= np.linalg.norm(q_sim)
+    hits = await store.memory_candidates(q_sim.tolist(), 0.6, 20)
+    assert [h["id"] for h in hits] == ["c5"]
+    assert hits[0]["memory_score"] > 0.9
+    assert "content_embedding" in hits[0] and hits[0]["text"] == "c5"  # injectable hit
+
+    # an orthogonal query recalls nothing (no similar past query), and c9 (no
+    # embedding stored) is never recalled
+    q_far = rng.normal(size=DIM).astype(np.float32)
+    q_far /= np.linalg.norm(q_far)
+    assert await store.memory_candidates(q_far.tolist(), 0.6, 20) == []
+    await store.close()
+
+
 async def test_recency_feedback_and_persistence(monkeypatch, tmp_path):
     path = str(tmp_path / "engramdb.pkl")
     store = EngramDBStore(path)

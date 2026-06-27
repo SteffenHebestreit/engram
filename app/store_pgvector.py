@@ -473,8 +473,14 @@ class PgvectorStore:
         }
 
     async def record_feedback(
-        self, query: str, used_chunk_ids: list[str], query_id: str | None = None
+        self,
+        query: str,
+        used_chunk_ids: list[str],
+        query_id: str | None = None,
+        query_embedding: list[float] | None = None,
     ) -> int:
+        # query_embedding accepted for protocol parity; the agent-memory boost is
+        # currently an engramdb-only capability (memory_candidates → {} here).
         if not used_chunk_ids:
             return 0
         async with self._pool.connection() as conn:
@@ -491,6 +497,15 @@ class PgvectorStore:
                         [(query, query_id, cid) for cid in existing],
                     )
         return len(existing)
+
+    async def memory_candidates(
+        self,
+        query_embedding: list[float],
+        min_sim: float,
+        max_neighbors: int,
+        tenant_id: str | None = None,
+    ) -> list[dict]:
+        return []  # agent-memory boost not implemented for the pgvector backend yet
 
     async def get_near_dup_links(self, chunk_ids: list[str]) -> dict[str, str]:
         from psycopg.rows import dict_row

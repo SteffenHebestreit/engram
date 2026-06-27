@@ -130,11 +130,26 @@ class Neo4jStore:
         return await graph.get_chunk_recency(self._driver, chunk_ids)
 
     async def record_feedback(
-        self, query: str, used_chunk_ids: list[str], query_id: str | None = None
+        self,
+        query: str,
+        used_chunk_ids: list[str],
+        query_id: str | None = None,
+        query_embedding: list[float] | None = None,
     ) -> int:
+        # query_embedding accepted for protocol parity; the agent-memory boost is
+        # currently an engramdb-only capability (memory_candidates → {} here).
         return await graph.record_feedback(
             self._driver, query, used_chunk_ids, query_id
         )
+
+    async def memory_candidates(
+        self,
+        query_embedding: list[float],
+        min_sim: float,
+        max_neighbors: int,
+        tenant_id: str | None = None,
+    ) -> list[dict]:
+        return []  # agent-memory boost not implemented for the Neo4j backend yet
 
     async def graph_proximity(
         self, seed_ids: list[str], candidate_ids: list[str], damping: float

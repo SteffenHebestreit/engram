@@ -143,15 +143,37 @@ class Store(Protocol):
         ...
 
     async def record_feedback(
-        self, query: str, used_chunk_ids: list[str], query_id: str | None = None
+        self,
+        query: str,
+        used_chunk_ids: list[str],
+        query_id: str | None = None,
+        query_embedding: list[float] | None = None,
     ) -> int:
         """Record that `used_chunk_ids` were the chunks an agent actually grounded
         its answer on for `query` (implicit-relevance feedback). Persists the
-        (query → used-chunk) positives durably so an offline job can later mine
-        hard negatives + tune fusion weights — the agent-in-the-loop learning
-        signal a stateless retriever can't capture. Returns how many links were
-        recorded (chunks that exist in the store)."""
+        (query → used-chunk) positives durably. When `query_embedding` is supplied,
+        it is stored too, enabling the **agent-memory boost** (`memory_candidates`)
+        — the learning side of the write-path that a stateless retriever can't
+        produce. Returns how many links were recorded (chunks that exist)."""
         ...
+
+    async def memory_candidates(
+        self,
+        query_embedding: list[float],
+        min_sim: float,
+        max_neighbors: int,
+        tenant_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Agent-memory recall: given the current query embedding, find recorded
+        feedback whose query embedding is ≥ `min_sim` cosine-similar (up to
+        `max_neighbors`), and return the chunk hits those similar past queries
+        *used* — each a normal chunk hit (id/doc_id/text/summary/keywords/
+        content_embedding/tenant_id) plus `memory_score` = the best query-query
+        cosine. Lets retrieval surface what worked for similar past queries
+        (improves over time) — the learning side of the write-path a stateless
+        retriever can't produce. Returns `[]` when the backend doesn't store
+        feedback embeddings / has no matching history."""
+        return []
 
     async def graph_proximity(
         self, seed_ids: list[str], candidate_ids: list[str], damping: float

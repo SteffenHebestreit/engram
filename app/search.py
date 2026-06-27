@@ -207,6 +207,47 @@ async def search(
     )
     shortlist = [pool[i] for i in picked]
 
+    # agent-memory boost (the learning side of /feedback): surface chunks that were
+    # *used* for similar past queries into the rerank shortlist, so retrieval
+    # improves from real usage over time — a stateful signal a stateless RAG
+    # pipeline structurally cannot produce. This is a RECALL mechanism (it injects
+    # candidates the base retrieval may have ranked too low to shortlist); the
+    # cross-encoder still judges final relevance, so it can't inflate an irrelevant
+    # hit. Opt-in; needs feedback recorded with query embeddings (memory_candidates
+    # returns [] otherwise, so this is a no-op for backends/stores without memory).
+    if settings.memory_boost_enabled and query_emb is not None:
+        mem_hits = await store.memory_candidates(
+            query_emb,
+            settings.memory_boost_min_sim,
+            settings.memory_boost_max_neighbors,
+            tenant_id,
+        )
+        in_shortlist = {c["id"] for c in shortlist}
+        for hit in mem_hits:
+            if hit["id"] in in_shortlist:
+                # already shortlisted — just credit the memory provenance + score
+                for c in shortlist:
+                    if c["id"] == hit["id"]:
+                        c["memory_score"] = hit["memory_score"]
+                        c.setdefault("channels", []).append("memory")
+                        break
+                continue
+            ms = hit["memory_score"]
+            shortlist.append({
+                **hit,
+                "retrieval_score": ms * settings.memory_boost_weight,
+                "graph_proximity": 0.0,
+                "graph_distance": 0,
+                "median_score": 0.0,
+                "sparse_score": 0.0,
+                "memory_score": ms,
+                "fused_score": ms * settings.memory_boost_weight,
+                "origin": "memory",
+                "channels": ["memory"],
+                "near_dup_of": hit.get("near_dup_of"),
+            })
+            in_shortlist.add(hit["id"])
+
     rerank_scores = None
     if settings.reranker_enabled:
         reranker = get_reranker(settings.reranker_strategy)

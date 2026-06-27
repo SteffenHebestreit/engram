@@ -206,6 +206,19 @@ class Settings(BaseSettings):
     recency_weight: float = 0.2
     recency_half_life_days: float = 30.0
 
+    # Agent-memory write-path boost (opt-in): the learning side of /feedback. When
+    # an agent marks chunks as *used* for a query (implicit relevance), engram
+    # remembers the (query-embedding -> used-chunk) association. On a later query,
+    # chunks that were used for *similar past queries* are injected into the
+    # candidate pool and boosted (weighted by query-query cosine), so retrieval
+    # IMPROVES OVER TIME from real usage — a stateful signal a stateless RAG
+    # pipeline structurally cannot produce. Folded into the fused score (pre-rerank)
+    # so it lifts recall, not just ordering. Off by default; needs recorded feedback.
+    memory_boost_enabled: bool = False
+    memory_boost_weight: float = 0.5      # contribution of the memory signal to fused_score
+    memory_boost_min_sim: float = 0.6     # only past queries this cosine-similar count
+    memory_boost_max_neighbors: int = 20  # cap on past-query neighbours considered
+
     # MMR shortlist selection: trade relevance (lambda) against redundancy
     # with already-picked candidates (1 - lambda); 1.0 disables the penalty
     mmr_lambda: float = 0.7
@@ -319,6 +332,10 @@ SEARCH_TUNABLE_FIELDS: frozenset[str] = frozenset(
         "recency_enabled",
         "recency_weight",
         "recency_half_life_days",
+        "memory_boost_enabled",
+        "memory_boost_weight",
+        "memory_boost_min_sim",
+        "memory_boost_max_neighbors",
         "reranker_enabled",
         "reranker_strategy",
         "mmr_lambda",

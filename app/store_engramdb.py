@@ -571,14 +571,56 @@ class EngramDBStore:
         return out
 
     async def record_feedback(
-        self, query: str, used_chunk_ids: list[str], query_id: str | None = None
+        self,
+        query: str,
+        used_chunk_ids: list[str],
+        query_id: str | None = None,
+        query_embedding: list[float] | None = None,
     ) -> int:
         valid = [c for c in used_chunk_ids if c in self._chunks]
         if valid:
-            self._feedback.append(
-                {"query": query, "query_id": query_id, "chunk_ids": valid}
-            )
+            rec: dict[str, Any] = {
+                "query": query, "query_id": query_id, "chunk_ids": valid
+            }
+            if query_embedding is not None:
+                v = np.asarray(query_embedding, dtype=np.float32)
+                rec["q_emb"] = v / (float(np.linalg.norm(v)) or 1.0)  # store normalized
+            self._feedback.append(rec)
         return len(valid)
+
+    async def memory_candidates(
+        self,
+        query_embedding: list[float],
+        min_sim: float,
+        max_neighbors: int,
+        tenant_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Agent-memory recall: chunk hits that were *used* for past queries similar
+        to this one, each scored by the best query-query cosine (`memory_score`).
+        The learning side of the write-path — retrieval that improves from real
+        usage, which a stateless pipeline cannot do. Only considers feedback
+        recorded with an embedding."""
+        fb = [f for f in self._feedback if "q_emb" in f]
+        if not fb:
+            return []
+        q = np.asarray(query_embedding, dtype=np.float32)
+        q = q / (float(np.linalg.norm(q)) or 1.0)
+        sims = np.stack([f["q_emb"] for f in fb]) @ q  # cosine (rows normalized)
+        scored: dict[str, float] = {}
+        for i in np.argsort(-sims)[: max(0, int(max_neighbors))]:
+            s = float(sims[i])
+            if s < min_sim:
+                break
+            for cid in fb[int(i)]["chunk_ids"]:
+                rec = self._chunks.get(cid)
+                if rec is None or not self._tenant_ok(rec, tenant_id):
+                    continue
+                if s > scored.get(cid, 0.0):
+                    scored[cid] = s
+        return [
+            {**self._hit(self._chunks[cid], s), "memory_score": s}
+            for cid, s in scored.items()
+        ]
 
     async def graph_proximity(
         self, seed_ids: list[str], candidate_ids: list[str], damping: float
