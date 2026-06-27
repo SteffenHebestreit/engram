@@ -130,6 +130,10 @@ async def init_schema(driver: AsyncDriver) -> None:
     async with driver.session() as session:
         for stmt in constraints:
             await session.run(stmt)
+        # range index for the tenant filter on multi-tenant reads
+        await session.run(
+            "CREATE INDEX chunk_tenant IF NOT EXISTS FOR (c:Chunk) ON (c.tenant_id)"
+        )
         for channel in resolve_vector_channels(settings):
             # OPTIONS does not accept query parameters; dim is an int from config
             # and index/prop names come from trusted config, not user input
@@ -212,7 +216,8 @@ async def save_document(
                 c.summary = row.summary,
                 c.keywords = row.keywords,
                 c.sparse_weights = row.sparse_json,
-                c.near_dup_of = row.near_dup_of
+                c.near_dup_of = row.near_dup_of,
+                c.tenant_id = row.tenant_id
             SET c += row.embeddings
             MERGE (c)-[:PART_OF]->(d)
             WITH c, row
@@ -264,21 +269,33 @@ async def delete_document(driver: AsyncDriver, doc_id: str) -> int | None:
 
 
 async def vector_search(
-    driver: AsyncDriver, index_name: str, embedding: list[float], k: int
+    driver: AsyncDriver,
+    index_name: str,
+    embedding: list[float],
+    k: int,
+    tenant_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Query one vector index; returns chunk fields plus the index score [0, 1]."""
+    """Query one vector index; returns chunk fields plus the index score [0, 1].
+
+    With `tenant_id`, restricts to that tenant — the ANN returns its top-k before
+    the filter, so over-fetch `tenant_overfetch * k` then keep the tenant's k."""
+    fetch_k = k * get_settings().tenant_overfetch if tenant_id else k
     async with driver.session() as session:
         result = await session.run(
             """
-            CALL db.index.vector.queryNodes($index_name, $k, $embedding)
+            CALL db.index.vector.queryNodes($index_name, $fetch_k, $embedding)
             YIELD node, score
+            WHERE $tenant IS NULL OR node.tenant_id = $tenant
             RETURN node.id AS id, node.doc_id AS doc_id, node.text AS text,
                    node.summary AS summary, node.keywords AS keywords,
                    node.content_embedding AS content_embedding, score
+            LIMIT $k
             """,
             index_name=index_name,
-            k=k,
+            fetch_k=fetch_k,
             embedding=embedding,
+            tenant=tenant_id,
+            k=k,
         )
         return [dict(record) async for record in result]
 
@@ -289,59 +306,73 @@ async def nearest_chunks(
     k: int,
     min_sim: float,
     exclude_doc_id: str | None = None,
+    tenant_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Content-vector nearest neighbours of `embedding` (memory write-path
     near-duplicate primitive). Reuses the content vector index; ANN returns k,
-    then we filter by `min_sim` and optionally exclude one document."""
-    channels = resolve_vector_channels(get_settings())
+    then we filter by `min_sim`, optionally exclude one document, and (for
+    multi-tenant dedup) restrict to one tenant."""
+    settings = get_settings()
+    channels = resolve_vector_channels(settings)
     content = next(
         (c for c in channels if c.embedding_prop == "content_embedding"), channels[0]
     )
+    fetch_k = k * settings.tenant_overfetch if tenant_id else k
     async with driver.session() as session:
         result = await session.run(
             """
-            CALL db.index.vector.queryNodes($index, $k, $embedding)
+            CALL db.index.vector.queryNodes($index, $fetch_k, $embedding)
             YIELD node, score
             // Neo4j normalizes cosine to (1+cos)/2; convert back to raw cosine
             // so `min_sim` is the same scale as the pgvector backend (1 - dist)
             WITH node, 2.0 * score - 1.0 AS sim
             WHERE sim >= $min_sim
               AND ($exclude IS NULL OR node.doc_id <> $exclude)
+              AND ($tenant IS NULL OR node.tenant_id = $tenant)
             RETURN node.id AS id, node.doc_id AS doc_id, node.seq AS seq,
                    node.text AS text, sim
             ORDER BY sim DESC
+            LIMIT $k
             """,
             index=content.index,
-            k=k,
+            fetch_k=fetch_k,
             embedding=embedding,
             min_sim=min_sim,
             exclude=exclude_doc_id,
+            tenant=tenant_id,
+            k=k,
         )
         return [dict(record) async for record in result]
 
 
 async def fulltext_search(
-    driver: AsyncDriver, query: str, k: int
+    driver: AsyncDriver, query: str, k: int, tenant_id: str | None = None
 ) -> list[dict[str, Any]]:
     """BM25-style lexical search over chunk text and summaries.
 
     Scores are Lucene scores (unbounded); callers must normalize before
-    fusing with the [0, 1] vector channel scores.
+    fusing with the [0, 1] vector channel scores. With `tenant_id`, over-fetch
+    then restrict to that tenant.
     """
     sanitized = _sanitize_fulltext_query(query)
     if not sanitized:
         return []
+    fetch_k = k * get_settings().tenant_overfetch if tenant_id else k
     async with driver.session() as session:
         result = await session.run(
             """
-            CALL db.index.fulltext.queryNodes($index, $q, {limit: $k})
+            CALL db.index.fulltext.queryNodes($index, $q, {limit: $fetch_k})
             YIELD node, score
+            WHERE $tenant IS NULL OR node.tenant_id = $tenant
             RETURN node.id AS id, node.doc_id AS doc_id, node.text AS text,
                    node.summary AS summary, node.keywords AS keywords,
                    node.content_embedding AS content_embedding, score
+            LIMIT $k
             """,
             index=FULLTEXT_INDEX,
             q=sanitized,
+            fetch_k=fetch_k,
+            tenant=tenant_id,
             k=k,
         )
         return [dict(record) async for record in result]
@@ -669,7 +700,7 @@ async def fetch_siblings(
             }}
             RETURN seed.id AS seed_id, sib.id AS id, sib.doc_id AS doc_id,
                    sib.text AS text, sib.summary AS summary,
-                   sib.keywords AS keywords,
+                   sib.keywords AS keywords, sib.tenant_id AS tenant_id,
                    sib.content_embedding AS content_embedding,
                    via, direction, distance, strength
             """,

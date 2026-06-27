@@ -30,7 +30,7 @@ def test_unknown_backend_raises_listing_options():
 async def test_neo4j_store_vector_search_delegates_with_channel_index(monkeypatch):
     captured = {}
 
-    async def fake_vector_search(driver, index_name, embedding, k):
+    async def fake_vector_search(driver, index_name, embedding, k, tenant_id=None):
         captured["args"] = (driver, index_name, embedding, k)
         return [{"id": "x"}]
 

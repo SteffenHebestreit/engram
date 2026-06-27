@@ -5,7 +5,18 @@ All notable changes to **engram**. Format loosely follows
 
 ## [Unreleased]
 
-Three feature branches built and tested, awaiting merge:
+Feature branches built and tested, awaiting merge:
+
+- **Multi-tenant isolation** (`tenant_id` on ingest + search, opt-in) — the
+  biggest adoption gap for SaaS RAG, and security-sensitive: every one of the
+  four chunk-surfacing reads filters by tenant (dense `vector_search`, BM25
+  `fulltext_search`, ingest-dedup `nearest_chunks` filter in-query; graph
+  siblings — which reach another tenant via a shared keyword — are filtered in
+  the pipeline). Ingest ids are namespaced per tenant so identical content / a
+  reused `document_id` can't collide or let one tenant overwrite another's doc.
+  Neo4j over-fetches the ANN top-k before filtering; pgvector raises
+  `hnsw.ef_search` in-transaction (both keep the filtered top-k full). Gated by a
+  **0%-cross-tenant-leakage** test on both live backends. Branch `multi-tenancy`.
 
 - **Reranker sidecar** (`deploy/reranker`) — serves Qwen3-Reranker in engram's
   reranker wire format, since TEI can't serve its causal-LM format. The measured

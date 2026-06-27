@@ -82,10 +82,16 @@ class Store(Protocol):
 
     # ── retrieval ────────────────────────────────────────────────────────────
     async def vector_search(
-        self, channel: "VectorChannel", embedding: list[float], k: int
+        self,
+        channel: "VectorChannel",
+        embedding: list[float],
+        k: int,
+        tenant_id: str | None = None,
     ) -> list[dict[str, Any]]: ...
 
-    async def fulltext_search(self, query: str, k: int) -> list[dict[str, Any]]: ...
+    async def fulltext_search(
+        self, query: str, k: int, tenant_id: str | None = None
+    ) -> list[dict[str, Any]]: ...
 
     async def fetch_siblings(
         self, seed_ids: list[str], keyword_sibling_limit: int, sequence_max_hops: int
@@ -110,6 +116,7 @@ class Store(Protocol):
         k: int,
         min_sim: float,
         exclude_doc_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Existing chunks most similar to `embedding` by content-vector cosine,
         for the memory write-path (near-duplicate detection at ingest).

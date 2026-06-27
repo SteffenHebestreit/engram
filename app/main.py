@@ -67,6 +67,7 @@ async def ingest(req: IngestRequest):
             req.title,
             req.source,
             req.document_id,
+            req.tenant_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -171,7 +172,12 @@ async def search_communities_endpoint(req: CommunitySearchRequest):
 async def search_endpoint(req: SearchRequest):
     try:
         results = await search(
-            app.state.store, app.state.http, req.query, req.top_k, req.tuning
+            app.state.store,
+            app.state.http,
+            req.query,
+            req.top_k,
+            req.tuning,
+            req.tenant_id,
         )
     except ValueError as exc:
         # e.g. a non-tunable field in req.tuning

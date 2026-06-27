@@ -60,7 +60,9 @@ class _DedupIngestStore:
     async def get_document(self, doc_id):
         return None
 
-    async def nearest_chunks(self, embedding, k, min_sim, exclude_doc_id=None):
+    async def nearest_chunks(
+        self, embedding, k, min_sim, exclude_doc_id=None, tenant_id=None
+    ):
         return [{"id": self._canonical, "sim": 0.99}] if self._canonical else []
 
     async def save_document(self, doc_id, title, sources, rows):
