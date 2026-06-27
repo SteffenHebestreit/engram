@@ -76,6 +76,11 @@ def schema_signature(settings: Any) -> str:
     # actually configured.
     if settings.passage_instruction:
         payload["passage_instruction"] = settings.passage_instruction
+    # Contextual Retrieval prepends an LLM-written context to each chunk before
+    # embedding, so the stored content vectors differ; toggling it must invalidate
+    # existing indexes. Added only when enabled, so the default case is unchanged.
+    if getattr(settings, "contextual_retrieval_enabled", False):
+        payload["contextual_retrieval"] = True
     raw = json.dumps(payload, sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -147,9 +152,13 @@ async def init_schema(driver: AsyncDriver) -> None:
                 }}}}
                 """
             )
+        # Contextual BM25: index the doc-situating context alongside text +
+        # summary, so the lexical channel also benefits from Contextual Retrieval.
+        # c.context is null for non-contextual chunks, so results are identical
+        # when the feature is off (no schema-signature change).
         await session.run(
             f"CREATE FULLTEXT INDEX {FULLTEXT_INDEX} IF NOT EXISTS "
-            "FOR (c:Chunk) ON EACH [c.text, c.summary]"
+            "FOR (c:Chunk) ON EACH [c.text, c.summary, c.context]"
         )
 
     # record the signature these indexes were built against (first run adopts;
@@ -217,7 +226,8 @@ async def save_document(
                 c.keywords = row.keywords,
                 c.sparse_weights = row.sparse_json,
                 c.near_dup_of = row.near_dup_of,
-                c.tenant_id = row.tenant_id
+                c.tenant_id = row.tenant_id,
+                c.context = row.context
             SET c += row.embeddings
             MERGE (c)-[:PART_OF]->(d)
             WITH c, row

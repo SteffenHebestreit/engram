@@ -17,6 +17,18 @@ Feature branches built and tested, awaiting merge:
   Neo4j over-fetches the ANN top-k before filtering; pgvector raises
   `hnsw.ef_search` in-transaction (both keep the filtered top-k full). Gated by a
   **0%-cross-tenant-leakage** test on both live backends. Branch `multi-tenancy`.
+- **Contextual Retrieval** (`CONTEXTUAL_RETRIEVAL_ENABLED`, opt-in) — Anthropic's
+  technique: at ingest an LLM writes a short document-situating context per chunk,
+  prepended before embedding so the content vector encodes document-level identity
+  (which entity/section/period it belongs to) instead of just the bare passage.
+  A change to the embedding *geometry* — the one layer a reranker can't overwrite —
+  and complementary to `NEXT_CHUNK` expansion (doc identity baked in at index time
+  vs. neighbour context at read time). Degrades to the bare chunk when the LLM is
+  down; part of the schema signature. Wired through the existing `CHANNEL_SOURCES`
+  seam. Includes **contextual BM25**: the context is also indexed for fulltext
+  (Neo4j: alongside text/summary; pgvector: a separate `context_tsv` generated
+  column) so the lexical channel benefits too — Anthropic's larger reported gain —
+  additively (empty when off → unchanged behaviour). Branch `contextual-retrieval`.
 
 - **Reranker sidecar** (`deploy/reranker`) — serves Qwen3-Reranker in engram's
   reranker wire format, since TEI can't serve its causal-LM format. The measured

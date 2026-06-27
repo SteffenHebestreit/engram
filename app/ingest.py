@@ -8,7 +8,7 @@ from .channels import get_channel_source, resolve_vector_channels
 from .chunking import get_chunker
 from .config import get_settings
 from .embeddings import embed_texts
-from .llm import ExtractionResult, get_extractor
+from .llm import ExtractionResult, generate_chunk_context, get_extractor
 
 if TYPE_CHECKING:
     from .store import Store
@@ -119,6 +119,22 @@ async def ingest_document(
         for i, c in enumerate(chunks)
     ]
 
+    # Contextual Retrieval (opt-in): the LLM writes a short document-situating
+    # context per fresh chunk, attached to its metadata so the `contextual_content`
+    # channel source prepends it before embedding. The whole document is the
+    # shared prefix across a doc's chunk calls (prompt-cache friendly). Degrades
+    # to no context for a chunk when the LLM is unavailable; reused chunks keep
+    # the context already baked into their stored vector.
+    if settings.contextual_retrieval_enabled and fresh_idx:
+
+        async def _context(i: int) -> tuple[int, str]:
+            async with semaphore:
+                return i, await generate_chunk_context(http, text, chunks[i])
+
+        for i, ctx in await asyncio.gather(*(_context(i) for i in fresh_idx)):
+            if ctx:
+                metadata[i]["context"] = ctx
+
     # one independent embedding space per active vector channel; embed only the
     # non-reused chunks per channel, then splice the reused vectors back by index.
     # The passage-side instruction (empty by default) is prepended for
@@ -198,6 +214,10 @@ async def ingest_document(
             "sparse_weights": sparse_by_seq[seq],
             "near_dup_of": near_dup_by_seq[seq],
             "tenant_id": tenant_id,
+            # Contextual Retrieval: the doc-situating context (empty unless the
+            # feature is on) is stored so it can be indexed for contextual BM25,
+            # in addition to being prepended to the content embedding above.
+            "context": metadata[seq].context,
         }
         for seq in range(len(chunks))
     ]

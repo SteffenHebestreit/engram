@@ -51,6 +51,20 @@ def _source_text(chunks: list[str], metadata: "list[ExtractionResult]") -> list[
     return chunks
 
 
+@CHANNEL_SOURCES.register("contextual_content")
+def _source_contextual_content(
+    chunks: list[str], metadata: "list[ExtractionResult]"
+) -> list[str]:
+    """Contextual Retrieval: prepend each chunk's document-situating context to
+    the chunk before embedding (falls back to the bare chunk when the context is
+    empty, e.g. the LLM was unavailable at ingest)."""
+    out = []
+    for chunk, m in zip(chunks, metadata):
+        ctx = m.context
+        out.append(f"{ctx}\n\n{chunk}" if ctx else chunk)
+    return out
+
+
 @CHANNEL_SOURCES.register("summary")
 def _source_summary(chunks: list[str], metadata: "list[ExtractionResult]") -> list[str]:
     return [m.summary for m in metadata]
@@ -85,7 +99,14 @@ def resolve_vector_channels(settings: "Settings") -> list[VectorChannel]:
             name="content",
             index="chunk_content_idx",
             embedding_prop="content_embedding",
-            source="text",
+            # Contextual Retrieval prepends a doc-situating context to the chunk
+            # before embedding; the index/property/weight are unchanged, so only
+            # the ingest-time embedded text differs (search is untouched).
+            source=(
+                "contextual_content"
+                if settings.contextual_retrieval_enabled
+                else "text"
+            ),
             weight=settings.content_channel_weight,
         )
     ]

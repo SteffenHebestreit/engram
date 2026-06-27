@@ -168,6 +168,37 @@ per-chunk LLM call entirely. Together that's the naive-baseline cost (1 embeddin
 in the fulltext index, since both derive from that metadata — so it's strictly
 opt-in, not the default.
 
+### Contextual Retrieval
+
+`CONTEXTUAL_RETRIEVAL_ENABLED=true` turns on [Anthropic's Contextual
+Retrieval](https://www.anthropic.com/news/contextual-retrieval): at ingest, an
+LLM writes a short *document-situating context* for each chunk (which entity,
+section, time period or topic it belongs to) and prepends it to the chunk
+**before embedding**. The content vector then encodes document-level identity
+instead of just the bare passage, so near-identical chunks from different
+documents stop colliding — a change to the embedding **geometry**, the one layer
+a reranker can't overwrite.
+
+It is complementary to engram's `NEXT_CHUNK` expansion, not redundant with it:
+the graph recovers *neighbour* context at read time, while this bakes *doc-level
+identity* into the vector at index time.
+
+Cost and caveats:
+- One extra LLM call per fresh chunk at ingest (reused/unchanged chunks keep the
+  context already baked into their stored vector). The whole document is sent as
+  the call's prefix — shared across that document's chunks — so providers that
+  cache prompt prefixes amortize it; `CONTEXTUAL_MAX_DOC_CHARS` bounds the prefix
+  for very large documents.
+- Degrades safely: if the LLM is unavailable the chunk is embedded bare, exactly
+  as with the feature off — ingest never breaks.
+- Changes the stored content vectors, so it is part of the **schema signature**:
+  enable it on a fresh store (or wipe + re-ingest), or the guard will stop you.
+- **Contextual BM25 too:** the context is also stored and indexed for fulltext
+  (Neo4j: indexed alongside `text`/`summary`; pgvector: a separate `context_tsv`),
+  so the lexical channel benefits as well — Anthropic's larger reported gain. This
+  part is additive and unconditional (the context is empty when the feature is
+  off, so a non-contextual store's fulltext results are unchanged).
+
 ---
 
 ## Special graphs (beyond documents)
