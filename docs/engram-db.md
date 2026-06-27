@@ -182,28 +182,34 @@ To exercise `NEXT_CHUNK`, SciFact abstracts were force-split (`CHUNK_TARGET_CHAR
 
 This is a *separate* claim from the store/PPR decision, which is settled.
 
-### Latency (profiler, synthetic corpus)
+### Latency scale sweep (profiler, realistic-corpus, `--fake-models`)
 
-Same profiler, same synthetic corpus, `--fake-models`, mean ms/query:
+Mean ms/query, per-doc jargon corpus (sparse keyword graph), models excluded:
 
-| metric | Neo4j 300 | pgvector 300 | Neo4j 2000 | pgvector 2000 |
+| stage | Neo4j 2k | pgvector 2k | Neo4j 20k | pgvector 20k |
 |---|---|---|---|---|
-| end-to-end | 73 | **66** | 120 | **59** |
-| vector retrieval (vec+FTS) | 24 | **7.6** | 37 | **11** |
-| graph (siblings ± PPR) | 42 | 54 | 74 | 42 |
-| CPU/other | 7 | 4.6 | 9 | 4.8 |
+| **end-to-end** | 78 | **28** | 178 | **131** |
+| store | 72 | 23 | 171 | 125 |
+| ├─ retrieval (vec+FTS) | 26 | 12 | **26** | 40 |
+| ├─ graph (siblings ± PPR) | 46 | 11 | **145** | 85 |
+| CPU/other | 6 | 5 | 7 | 5 |
 
-Clean, consistent signals:
-- **pgvector vector retrieval is 2–3× faster** (7.6 vs 24 ms; 11 vs 37 ms) and
-  scales better — pgvector HNSW + `tsvector` beats Neo4j's vector + fulltext here.
-- **Neo4j end-to-end grows with the corpus** (73→120 ms) while pgvector stays
-  flat/low (66→59) — Neo4j's PPR/GDS projection cost scales with graph size.
-- The **graph row is noisy and partly an artifact**: the synthetic generator uses
-  a ~40-word vocabulary, so the `HAS_KEYWORD` graph is unrealistically dense and
-  the sibling join is worst-case on *both* backends (real corpora are far sparser).
-  Same corpus both sides → the *comparison* is fair; the absolute graph numbers
-  over-state realistic load. Neo4j additionally computes **PPR** here (a quality
-  signal) that pgvector does not.
+What scales (and what doesn't):
+- **pgvector is faster end-to-end at every size** (28 vs 78 @2k; 131 vs 178 @20k),
+  though the relative gap narrows with scale (2.8× → 1.36×).
+- **The graph stage is the scaling bottleneck on *both* backends** — it dominates
+  at 20k (Neo4j 145/178 = 81%; pgvector 85/131 = 65%). The keyword-sibling
+  expansion grows with corpus size on each. **This, not the vector ANN, is the #1
+  thing Engram-DB must make efficient at scale** (bounded fan-out, indexed joins).
+- **Neo4j's graph grows fastest** (46 → 145 ms) — that extra growth is PPR/GDS, the
+  op proven to add zero quality. (A neo4j+decay run at 20k decomposes siblings vs
+  PPR — see below.)
+- **Surprise reversal in vector retrieval at scale:** Neo4j's vector index stays
+  flat (26 → 26 ms) while pgvector's HNSW grows (12 → 40 ms) and *overtakes* it.
+  pgvector's deep recall + retrieval cost is `ef_search`-bound — tune it at scale.
+
+The earlier (dense ~40-word vocab) latency numbers over-stated the graph stage on
+both backends and are superseded by this realistic-corpus sweep.
 
 What pgvector gives up (feature, not latency): **PPR graph proximity** (→ decay
 fallback), the **community/theme layer**, and the **structured-entity graph**.
