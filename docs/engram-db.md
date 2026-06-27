@@ -422,13 +422,14 @@ speed win does not cost quality.
   b1 is the deep memory moat for very large / unbounded corpora. (Naive 1-bit
   hamming *without* the rescore is not quality-safe — the rescore is what makes it
   work; covered by `test_b1_quantization_preserves_ranking`.)
-- **Remaining (lower-value) levers:** the one scaling bottleneck left is the BM25
-  fulltext (vector is now sub-ms), but that's mostly a *synthetic-query artifact*
-  (profiler query terms are super-common words → huge postings; real queries are
-  selective), so block-max/WAND BM25 is deferred until a real corpus shows it
-  matters. An incremental on-disk segment format (today: in-memory + optional
-  pickle snapshot) is the other production-hardening follow-up. *(The real-model
-  quality run is done — see below.)*
+- **Remaining levers (both production-hardening, no quality dimension):**
+  (1) **block-max / WAND BM25** — the one scaling bottleneck left is the BM25
+  fulltext (vector is now sub-ms), but it's mostly a *synthetic-query artifact*
+  (profiler terms are super-common → huge postings; real queries are selective),
+  so it's deferred until a real corpus shows it matters. (2) **on-disk / mmap
+  segment format** — moves the chunk embeddings out of core (today: in-memory +
+  optional pickle snapshot); design + decision at the end of this doc.
+  *(The real-model quality run + the b1 memory tier are done — see below.)*
 
 ### Real production-model head-to-head (bge-m3 + bge-reranker-v2-m3, RTX 4080)
 
@@ -474,3 +475,32 @@ Two things this proves on the **real** models, not the floor stack:
    So the pipeline's lift is not a small-model artifact — it holds with a 2026 SOTA
    embedder + reranker. (Both backends sit ~+1.2–1.4 over `dense+rerank`; engramdb
    is the faster of the two at equal quality.)
+
+## On-disk segment format — design + decision
+
+**What it is.** Today engramdb is in-memory with an optional whole-store pickle
+snapshot (`ENGRAMDB_PATH`). The vector *cache* is already lean (b1 = 32× smaller
+than f32), but the **chunk embeddings stay resident** (MMR/dedup read them), so RAM
+still scales with corpus × dim. The production format moves them out of core:
+
+- one memory-mapped `(N × dim)` array per channel (a "segment") on disk; `_chunks`
+  keeps a row index, not the vector, and reads go through the mmap;
+- new ingests append to an in-RAM **delta** segment, merged/compacted into the
+  on-disk segment on snapshot (segment + delta, like Lucene / usearch);
+- usearch indexes persisted via `Index.save` / `restore(view=True)` so the ANN
+  structure is mmap'd too; b1 codes via `np.save` / `np.memmap`.
+
+This buys **corpora beyond RAM** and **fast cold-start** (no full deserialize) — the
+piece that turns b1's 32× into a true end-to-end RAM win.
+
+**Decision: specified, not yet built — deliberately.** It is the one remaining item
+that is *pure production infrastructure* (no quality dimension) and whose benefit
+(out-of-core, cold-start) **cannot be validated on the corpora available here**
+(SciFact/NFCorpus fit in RAM many times over). It is also a correctness-sensitive
+rewrite of the storage core (positional segment arrays + delete compaction) in an
+already-released backend. Per this project's measurement discipline — and the rule
+to *not regress the quality/stability win while chasing speed* — it should be built
+and benchmarked against a **>RAM corpus**, where its benefit is measurable and its
+correctness is exercised at scale, rather than rushed in blind. Everything that is
+**quality-relevant and verifiable here** (real-model parity; the full quant ladder
+f16/i8/b1) is implemented, verified, and shipped.
