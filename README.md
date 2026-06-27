@@ -512,8 +512,11 @@ their different embedders/LLMs.) Full methodology + every table:
 [bench/RESULTS.md](bench/RESULTS.md).
 
 On engram's production stack (**BGE-M3** + **bge-reranker-v2-m3**, on an RTX
-4080), it is the **strongest architecture on the board for retrieval quality** —
-beating naive single-vector RAG, BM25, *and* the standard dense→rerank pipeline.
+4080), engram clearly beats naive single-vector RAG and BM25, and is
+**statistically tied** with the standard dense→rerank *and* a strong
+hybrid(dense+BM25)+rerank baseline (point estimate slightly ahead, but the paired
+difference is within noise — 95%CI straddles 0, sign-p > 0.05). See the honest
+breakdown below.
 
 **BEIR SciFact** (5,183 docs · 300 queries)
 
@@ -540,14 +543,15 @@ BEIR nDCG.
 **Two findings that make the advantage actionable** (full study in
 [RESULTS.md §1d–1e](bench/RESULTS.md)):
 
-- **The architecture's edge *compounds with a strong reranker*.** Swapping in a
-  2026 reranker (Qwen3-Reranker-0.6B — a drop-in, multilingual `CrossEncoder`)
-  lifts engram to **0.772 nDCG@10 / 0.891 recall@10**, and the architecture gap
-  over `dense+rerank` *grows* to **+2.15 / +4.0** — engram's fusion+graph feed a
-  better candidate pool that a strong reranker exploits. The reranker is the one
-  stage nothing washes out, so it's the highest-leverage knob — and engram is the
-  bigger winner for using it. **Ship it with [`deploy/reranker`](deploy/reranker)**
-  (a sidecar that serves Qwen3-Reranker in engram's reranker format).
+- **The reranker is the one large, robust quality lever.** Swapping in a 2026
+  reranker (Qwen3-Reranker-0.6B — a drop-in, multilingual `CrossEncoder`) lifts
+  **every** system by +3–4 nDCG@10, engram included: engram reaches **0.774
+  nDCG@10 / 0.891 recall@10**. (Honest note: engram's point estimate over
+  `dense+rerank` rises to +2.3, but that gap is **not directionally significant** —
+  26 win / 26 loss, sign-p 1.0 — and is a tie vs hybrid+rerank; the *reranker*, not
+  the architecture, is what moves quality.) **Ship the reranker with
+  [`deploy/reranker`](deploy/reranker)** — it's the highest-leverage knob, and it
+  benefits any backend.
 - **A stronger *embedder* barely moves the result** (Qwen3-Embedding is +4.4
   dense yet ≈tied at engram's pipeline) — the reranker caps it. So **BGE-M3 stays
   the robust default**; chase the reranker, not the embedder.

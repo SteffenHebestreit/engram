@@ -35,13 +35,13 @@ is RAGFlow / Weaviate (engines) and Zep / Mem0 (memory).
 |---|---|---|---|
 | Hybrid retrieval (dense+lexical+fusion) | 4 channels, DBSF convex fusion | Weaviate/RAGFlow have hybrid; ours adds 3 dense views + learned-sparse | **TS** |
 | Reranking | cross-encoder + Qwen3 sidecar + ColBERT strategy + autocut | parity; Qwen3-4B swing still unmeasured | **TS** (CA pending bench) |
-| Graph-augmented ranking | NEXT_CHUNK + HAS_KEYWORD + **PPR proximity in the ranker** | most bolt graph on *beside* retrieval (GraphRAG); ours is *in* the fused score | **CA** |
+| Graph-augmented ranking | NEXT_CHUNK + HAS_KEYWORD + **PPR proximity in the ranker** | most bolt graph on *beside* retrieval (GraphRAG); ours is *in* the fused score — but rigorous benches show it's a **robustness floor** (helps weak embedders, n.s. with bge-m3 on multi-hop, even with PPR) | **TS** |
 | Contextual Retrieval | embeddings **+ BM25**, built into ingest | LangChain has ContextualCompression (different); few engines bake in Anthropic-style contextual ingest | **CA** (measurement gated) |
 | Multi-tenant isolation | per-doc `tenant_id`, all 4 reads, 0%-leak test | Weaviate has it; frameworks/most engines don't | **TS** (CA vs frameworks) |
 | Recency / temporal | exponential decay, post-rerank blend | memory systems have recency; RAG engines usually don't | **TS** (vs memory) / **CA** (vs RAG) |
 | Bi-temporal fact invalidation | recency only — **no valid_from/valid_to/invalidation** | Zep's core moat; the memory frontier | **GAP** |
 | Judge-free eval + per-channel attribution | `POST /eval`, bootstrap CIs, `unique_to_channel` | competitors ship LLM-judge winrates | **CA** |
-| Measured architecture delta | **+1.6–2.2 nDCG / +3–4 recall** over naive dense+rerank, models fixed | almost nobody isolates architecture from model | **CA** |
+| Measured architecture delta | point estimate **~+1.4 nDCG** over *naive* dense+rerank (models fixed), but **n.s.** (95%CI straddles 0, sign-p>0.05) and **a tie vs a strong hybrid+rerank baseline** — the lift is mostly the BM25 channel, not graph/median/MMR | we isolate architecture honestly (CIs + paired tests + hybrid control); the *delta itself* is not a quality edge | **TS** |
 | Document understanding (layout/tables/PDF) | text in; **no DeepDoc-style parsing** | RAGFlow's headline feature | **GAP** |
 | Hierarchical summarization | Leiden community/theme layer | RAGFlow RAPTOR/Ψ-RAG trees — ours is graph-community, not recursive tree | **partial** |
 | Agentic retrieval loop | single-shot pipeline + **heuristic** routing | 2026 frontier = a reasoning loop (reformulate/re-search) + *learned* per-query policy | **GAP** (partly by design — the loop lives in the calling agent) |

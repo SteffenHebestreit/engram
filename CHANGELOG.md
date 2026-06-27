@@ -19,10 +19,16 @@ All notable changes to **engram**. Format loosely follows
 ### Verified
 - **Engram-DB quality parity proven on the real production stack** (not just the
   CPU MiniLM floor): GPU head-to-head with `bge-m3` + `bge-reranker-v2-m3`
-  ([bench/compare.py](bench/compare.py)) — engram·engramdb ties engram·Neo4j
-  (SciFact 0.7389 vs 0.7373, NFCorpus 0.3397 vs 0.3378 nDCG@10) and beats standard
-  2-stage `dense+rerank` by **+1.39 / +0.73 nDCG@10**. See
-  [docs/engram-db.md](docs/engram-db.md) "Real production-model head-to-head".
+  ([bench/compare.py](bench/compare.py), now with bootstrap CIs + paired sign
+  tests + a hybrid+rerank control) — engram·engramdb **ties** engram·Neo4j (SciFact
+  0.7389 vs 0.7373, NFCorpus 0.3377 vs 0.3378) and **beats pgvector** (SciFact
+  0.7232, its BM25 channel underperforms); confirmed on multi-hop (engramdb decay
+  ties Neo4j PPR) and with Qwen3-Reranker (0.7738 vs 0.7723). **Honest correction**
+  (after an adversarial review): engram's lift over a strong `dense+rerank` /
+  `hybrid+rerank` baseline is **not statistically significant** — the median/MMR/
+  graph stages add no robust single-hop or multi-hop nDCG with production models;
+  the architecture is a robustness floor + operational value, and the reranker is
+  the real quality lever. See [docs/engram-db.md](docs/engram-db.md).
 
 ## [0.4.0] - 2026-06-27
 
@@ -153,11 +159,13 @@ All notable changes to **engram**. Format loosely follows
 
 ### Notes
 - Controlled benchmarks (same models, only the architecture changes): engram's
-  architecture adds **+1.6 to +2.2 nDCG@10 / +3–4 recall@10 over naive
-  dense+rerank** on SciFact. The **reranker is the highest-leverage lever**;
-  upstream signals (sparse, graph, even a stronger embedder) cap at it on
-  saturated benchmarks. Full study + honest negatives in
-  [bench/RESULTS.md](bench/RESULTS.md).
+  architecture showed a **+1.6 to +2.2 nDCG@10** point estimate over naive
+  dense+rerank on SciFact. **⚠️ Superseded — see [Unreleased]:** a later rigorous
+  re-run (bootstrap CIs + paired sign tests + a hybrid+rerank control) found this
+  delta is **not statistically significant** and is mostly the BM25 channel, not
+  the graph/median/MMR. The **reranker is the one highest-leverage, robust lever**;
+  upstream signals (sparse, graph, stronger embedder) cap at it. Full study +
+  honest negatives in [bench/RESULTS.md](bench/RESULTS.md).
 
 ## [0.1.2] - 2026-06-14
 

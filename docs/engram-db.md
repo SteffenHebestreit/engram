@@ -359,7 +359,7 @@ change these deltas.
   multi-tenancy / recency / sparse / near-dup / feedback. Optional pickle snapshot
   (`ENGRAMDB_PATH`). Community synthesis + structured-entity graph deliberately
   omitted. Runs the full pipeline + passes an in-process test suite (no server).
-### Prototype benchmark — Engram-DB **wins across the board**
+### Prototype benchmark — Engram-DB is the **fastest backend at every scale** (quality tied)
 
 Same profiler, `--fake-models`, decay-vs-decay, end-to-end ms/query (engramdb runs
 in-process; the others over a container socket):
@@ -486,8 +486,10 @@ What the rigorous run establishes — and, honestly, what it does **not**:
    claim — holds).** engram·engramdb **ties** engram·Neo4j (0.7389 vs 0.7373;
    0.3377 vs 0.3378) — a difference well inside the noise floor (independent same-
    config runs of engramdb itself vary ~0.002, and an earlier run logged 0.7408 /
-   0.3411 — see *Reconciliation* below). engramdb is **never worse** than Neo4j on
-   any metric and actually **beats pgvector on SciFact** (0.7389 vs 0.7232): on
+   0.3411 — see *Reconciliation* below). engramdb is **statistically
+   indistinguishable** from Neo4j (the fractional NFCorpus gaps — 0.3377 vs 0.3378
+   — are within that ~0.002 run-to-run noise) and **beats pgvector on SciFact**
+   (0.7389 vs 0.7232): on
    SciFact pgvector's tsvector BM25 channel underperforms (it surfaced only 21 of
    the gold hits vs ~273 for engramdb/Neo4j), dragging its fused result *below* even
    `dense+rerank`. So engramdb matches the **strongest** engram-layer backend.
@@ -535,16 +537,17 @@ n=500), Recall@2 / @5 / @10:
 Two conclusions, both honest:
 
 1. **The graph adds no *significant* multi-hop lift with a strong embedder.** Paired
-   per-question: engram − dense+rerank ΔR@5 = 0.000 (Neo4j) / 0.000 (engramdb),
-   engram − hybrid+rerank −0.004 / −0.003 — all **n.s.** (sign-p > 0.4; ~490/500
-   queries tie). bge-m3 already retrieves the linked passages (dense+rerank R@5
-   0.937), so the keyword-graph + PPR expansion has nothing left to recover. The
-   graph's measured lift is real only with a *weak* embedder (MiniLM: +1.7/+1.9 R@5/@10
-   — see [bench/RESULTS.md](../bench/RESULTS.md) §2). It is a **robustness floor**,
-   not a benchmark win.
-2. **engramdb (decay, no PPR) matches Neo4j (PPR) on multi-hop — at ~2× speed.**
-   R@5 0.9370 vs 0.9360, R@10 0.9670 vs 0.9640 (a tie, engramdb marginally ahead);
-   ingest 122 s vs 260 s, query 384 s vs 516 s. So dropping Personalized PageRank
+   per-question: engram − dense+rerank ΔR@5 = −0.001 (Neo4j) / 0.000 (engramdb),
+   engram − hybrid+rerank −0.004 / −0.003 — all **n.s.** (sign-p 0.16–1.0, all >
+   0.05; ~490/500 queries tie). bge-m3 already retrieves the linked passages
+   (dense+rerank R@5 0.937), so the keyword-graph + PPR expansion has nothing left
+   to recover. The graph's measured lift is real only with a *weak* embedder
+   (MiniLM: +1.7/+1.9 R@5/@10 — see [bench/RESULTS.md](../bench/RESULTS.md) §2). It
+   is a **robustness floor**, not a benchmark win.
+2. **engramdb (decay, no PPR) matches Neo4j (PPR) on multi-hop — ~2× faster ingest,
+   ~1.3× faster query.** R@5 0.9370 vs 0.9360, R@10 0.9670 vs 0.9640 (a tie,
+   engramdb marginally ahead); ingest 122 s vs 260 s, query 384 s vs 516 s. So
+   dropping Personalized PageRank
    for per-hop decay loses **nothing** on the graph's home turf with real models —
    the central Engram-DB design bet, now confirmed end-to-end on the production stack.
 

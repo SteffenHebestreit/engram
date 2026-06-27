@@ -21,8 +21,13 @@ are queued for a box with more (ideally **unified**) memory — e.g. a **Strix H
 | BGE-M3 + **Qwen3-Reranker-0.6B** | **0.7723 / 0.3795** | RESULTS §1e |
 | Qwen3-Embedding-0.6B + bge-reranker | 0.7409 / — | RESULTS §1d *(prompt-confounded; superseded)* |
 
-`engram − dense+rerank` (the **architecture** delta, models held constant) =
-**+1.6 to +2.2 nDCG / +3–4 recall** — verified, and the number that's *ours*.
+`engram − dense+rerank` is a positive *point estimate* (~+1.4 nDCG) but, on a
+rigorous re-run (bootstrap CIs + paired sign tests + a hybrid+rerank control), is
+**NOT statistically significant** (95%CI straddles 0; sign-p > 0.05) and is a
+**tie vs hybrid+rerank** — most of it is the BM25 channel, not graph/median/MMR.
+The **verified, robust** wins are: the **reranker** (+3–4 nDCG, every system),
+and the **backend/quant** (engramdb ties Neo4j / beats pgvector, b1 ties f32,
+faster). See [docs/engram-db.md](../docs/engram-db.md) for the corrected analysis.
 
 ## The runs to do (each ALONE — never parallel; `docker stop` to kill, see [[bench-run-sequentially]])
 

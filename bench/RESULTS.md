@@ -59,9 +59,11 @@ Two structural observations (now read in light of that correction):
 - The architecture is a **robustness layer**: its recall gain is large with a
   weaker embedder (BGE-M3 +3–4) and ≈0 with a SOTA embedder (Qwen3 +0.1) — when
   the embedder already retrieves everything, there's less for fusion+graph to add.
-- The architecture **compounds with a strong reranker**: the gap *grew* to +2.15
-  with Qwen3-Reranker, because engram's fusion+graph put better candidates in the
-  shortlist that a strong reranker can then exploit (recall +4.0).
+- With a strong reranker the point estimate *rose* to +2.3 (Qwen3-Reranker), **but
+  per the ⚠️ correction above this is not statistically significant** (26 win / 26
+  loss, sign-p 1.0) and is a tie vs a hybrid+rerank control — the reranker upgrade
+  (+3.15 nDCG, real and robust) lifts everything; it is not evidence the
+  architecture compounds. The honest lever here is the **reranker**, not the graph.
 
 A useful property for trusting the deltas: even when an embedder run is mis-
 prompted (§1d), the architecture Δ stays valid, because `engram` and
@@ -110,11 +112,13 @@ Standard IR benchmark; headline metric nDCG@10.
 | dense+rerank | 0.3324 | 0.1614 | 0.1518 | 0.2412 |
 | **engram** | **0.3411** | **0.1666** | **0.1567** | **0.2446** |
 
-**engram wins every metric on both datasets.** It beats naive vector RAG by ~+10
-pts nDCG@10 (SciFact) / ~+2.4 (NFCorpus), beats BM25 clearly, and beats even the
-strong dense+rerank pipeline (+1.6 / +0.9 pts nDCG@10) — the DBSF fusion +
-median-proximity + MMR add consistent value, and the margin over dense+rerank is
-*larger* with the better reranker than at the floor (fusion compounds).
+engram beats naive vector RAG clearly (~+10 pts nDCG@10 SciFact / ~+2.4 NFCorpus)
+and beats BM25. Its edge over the **strong dense+rerank** pipeline is a positive
+*point estimate* (+1.4 / +0.5 pts nDCG@10) **but not statistically significant**
+(see the ⚠️ correction in "What this measures" above: 95%CI straddles 0, sign-p
+0.27/0.41, and a hybrid(dense+BM25)+rerank control captures nearly all of it — so
+the gain is the BM25 channel, not median-proximity/MMR). Treat these rows as
+"engram ≥ naive 2-stage", not as a demonstrated architecture quality win.
 
 ### Floor stack (MiniLM + ms-marco cross-encoder, CPU)
 
@@ -410,12 +414,19 @@ retrieval is hard.
 
 ## Headline
 
-- **BEIR retrieval, production stack: engram is the best architecture on the
-  board** — wins every metric on both datasets, beating naive vector RAG, BM25,
-  and the standard dense+rerank pipeline.
-- **Multi-hop: engram ≥ the best baseline everywhere** — a clear win with a weak
-  embedder, a tie with a SOTA one (because the graph compensates for retrieval
-  the embedder can't do alone).
+- **BEIR retrieval, production stack: engram beats naive vector RAG and BM25
+  clearly, and is statistically *tied* with the standard dense+rerank and a strong
+  hybrid+rerank baseline** (point estimate slightly ahead, but n.s. — 95%CI
+  straddles 0, sign-p > 0.05; the edge over naive dense+rerank is mostly the BM25
+  channel). engram's distinctive median/MMR/graph stages add no significant
+  single-hop nDCG with production models.
+- **Multi-hop: engram ties the best baseline** with a SOTA embedder (n.s. vs
+  dense+rerank and hybrid+rerank, even with PPR — bge-m3 already retrieves the
+  linked passage); the graph delivers a real lift only with a *weak* embedder
+  (MiniLM +1.7/+1.9). It's a robustness floor, not a benchmark win.
+- **The real, robust quality lever is the reranker** (+3–4 nDCG@10, every system);
+  engram's genuine edges are **performance** (embedded engramdb, fastest backend,
+  b1 32× memory) and the **operational/agent-memory layer**, not a benchmark crown.
 
 ## Caveats (so the numbers are trustworthy)
 
