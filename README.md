@@ -473,6 +473,9 @@ Everything is a `.env` variable, with sane defaults and zero code changes:
 | `TOP_K_PER_INDEX` / `SEED_COUNT` | 12 / 8 | channel depth / how many hits get graph-expanded |
 | `RERANK_TOP_K` / `FINAL_TOP_K` | 15 / 8 | shortlist size / answer size |
 | `METADATA_EXTRACTOR` | `yake` | how per-page keywords + summary are made: `yake` (statistical, no LLM) / `default` (LLM gist, opt-in) / `none` |
+| `EXTRACTION_LLM_API_BASE` / `_MODEL` / `_API_KEY` | (blank → `LLM_*`) | point the opt-in LLM extractor at a separate small/fast model, leaving the strong `LLM_MODEL` for HyDE/contextual/community |
+| `EXTRACTION_RESPONSE_FORMAT` / `EXTRACTION_EXTRA_BODY` | "" / `{}` | `json_schema` = guaranteed JSON + suppresses thinking (required by LM Studio); `EXTRACTION_EXTRA_BODY` injects per-stack reasoning controls (e.g. `{"reasoning_effort":"none"}`) |
+| `EXTRACTION_MAX_TOKENS` / `EXTRACTION_MIN_CHARS` | 0 / 0 | cap extractor output tokens; skip the LLM for chunks shorter than N chars (fall back to yake) |
 | `EXTRACTION_CONCURRENCY` | 4 | max parallel LLM calls during ingest (LLM paths only: `METADATA_EXTRACTOR=default` or contextual on) |
 | `EMBEDDING_BATCH_SIZE` / `EMBEDDING_CONCURRENCY` | 64 / 4 | texts per embedding request / requests in flight |
 

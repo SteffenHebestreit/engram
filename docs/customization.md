@@ -63,6 +63,28 @@ makes no per-chunk chat call; `default` is the opt-in LLM upgrade (sharper
 abstractive gist, one call per fresh chunk). A domain extractor might pull named
 entities or code symbols instead.
 
+**A separate small/fast model for the LLM extractor.** Extraction is the
+high-volume, low-difficulty LLM call, so when you run `METADATA_EXTRACTOR=default`
+it pays to point it at a *small* model independent of the strong one used for
+HyDE/contextual/community: set `EXTRACTION_LLM_API_BASE` / `EXTRACTION_LLM_MODEL`
+/ `EXTRACTION_LLM_API_KEY` (each falls back to its `LLM_*` counterpart when blank).
+Make it reliable + cheap across serving stacks:
+
+- `EXTRACTION_RESPONSE_FORMAT=json_schema` sends the `{keywords,summary}` schema —
+  **guaranteed** valid JSON via constrained decoding, and it *suppresses
+  chain-of-thought* on servers that gate it (also **required by LM Studio**, which
+  rejects `json_object`).
+- `EXTRACTION_EXTRA_BODY` merges serving-specific reasoning controls at the request
+  top level, stack-agnostically — e.g. `{"chat_template_kwargs":{"enable_thinking":false}}`
+  (vLLM Qwen3) or `{"reasoning_effort":"none"}` (Ollama/LM Studio). Thinking models
+  (Qwen3, Gemma 4) otherwise waste tokens reasoning on this trivial task.
+- `EXTRACTION_MAX_TOKENS` caps the (tiny) output; `EXTRACTION_MIN_CHARS` skips the
+  LLM for short chunks (titles/headers), falling back to yake.
+
+Compare candidate extraction models on throughput **and** quality with
+[bench/extractor_bench.py](../bench/extractor_bench.py); pick embedders/rerankers
+against a live stack with [bench/live_eval.py](../bench/live_eval.py).
+
 ### Fusion
 `(channel_hits, channels, fulltext_hits, fulltext_weight, settings) -> dict[id, candidate]`.
 The default DBSF-normalizes each channel then convex-combines them. An
