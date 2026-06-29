@@ -47,7 +47,7 @@ pgvector).
 ```
         INGESTION  -  reading & remembering
         ─────────────────────────────────────
- document ──► split into pages ──► LLM writes a summary + keywords per page
+ document ──► split into pages ──► keywords + a summary per page  (no LLM by default)
                                          │
                                          ▼
                        3 embeddings per page (content / summary / keywords)
@@ -85,11 +85,16 @@ When you feed a document in, it isn't just stored, it's *studied*:
    characters), like tearing a book into pages that slightly overlap so no
    sentence falls into the gap between two pages.
 
-2. **Three name tags per page.** An LLM reads every chunk and writes a
-   one-sentence **summary** and a set of **keywords**. Each of the three
-   views (full text, summary, keywords) gets its **own embedding**. Why?
-   Because a question sometimes matches a page's exact words, sometimes its
-   gist, and sometimes just its topic. Three tags, three chances to be found.
+2. **Three name tags per page.** Every chunk gets a set of **keywords** and a
+   short **summary** — by default with **no LLM**: keywords come from
+   statistical extraction (YAKE) and the summary is the page's lead sentence,
+   so ingestion needs no chat model and isn't bottlenecked on per-chunk
+   generation. (Want a sharper, abstractive gist? `METADATA_EXTRACTOR=default`
+   has an LLM write them instead — an opt-in upgrade, not a measured one.)
+   Each of the three views (full text, summary, keywords) gets its **own
+   embedding**. Why? Because a question sometimes matches a page's exact words,
+   sometimes its gist, and sometimes just its topic. Three tags, three chances
+   to be found.
 
 3. **A thread through the book.** Chunks are linked in reading order with
    *directional* `NEXT_CHUNK` edges: every page knows which page comes
@@ -130,7 +135,7 @@ Your query runs against **four channels at once**:
 | Librarian | Looks at | Catches |
 |---|---|---|
 | Content | full chunk-text embedding | detailed semantic matches |
-| Summary | one-sentence-gist embedding | "this page is *about* that" |
+| Summary | lead-sentence (or opt-in LLM-gist) embedding | "this page is *about* that" |
 | Keywords | topic-label embedding | thematic matches |
 | Fulltext (BM25) | the literal words | exact terms, names, error codes |
 
@@ -323,7 +328,7 @@ document's current `sources`.
 
 | Endpoint | What it does |
 |---|---|
-| `POST /documents` | ingest: chunk → LLM metadata → 3× embed → graph |
+| `POST /documents` | ingest: chunk → metadata (keywords + summary, no LLM by default) → 3× embed → graph |
 | `GET /documents` | list what's in the library |
 | `DELETE /documents/{id}` | forget a document: every chunk, its edges, and orphaned keywords |
 | `POST /search` | the full nine-step pipeline above |
@@ -467,7 +472,8 @@ Everything is a `.env` variable, with sane defaults and zero code changes:
 | `DEDUP_ENABLED` / `DEDUP_COSINE_THRESHOLD` | false / 0.95 | memory write-path: link + collapse near-duplicate chunks (see below) |
 | `TOP_K_PER_INDEX` / `SEED_COUNT` | 12 / 8 | channel depth / how many hits get graph-expanded |
 | `RERANK_TOP_K` / `FINAL_TOP_K` | 15 / 8 | shortlist size / answer size |
-| `EXTRACTION_CONCURRENCY` | 4 | parallel LLM metadata calls during ingest |
+| `METADATA_EXTRACTOR` | `yake` | how per-page keywords + summary are made: `yake` (statistical, no LLM) / `default` (LLM gist, opt-in) / `none` |
+| `EXTRACTION_CONCURRENCY` | 4 | max parallel LLM calls during ingest (LLM paths only: `METADATA_EXTRACTOR=default` or contextual on) |
 | `EMBEDDING_BATCH_SIZE` / `EMBEDDING_CONCURRENCY` | 64 / 4 | texts per embedding request / requests in flight |
 
 ---

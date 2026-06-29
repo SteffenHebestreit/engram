@@ -60,6 +60,74 @@ docker compose -f bench/docker-compose.yml -f bench/docker-compose.gpu.yml \
     runner python -m bench.compare
 ```
 
+## Picking an extraction model ([extractor_bench.py](extractor_bench.py))
+
+A different question from the retrieval benchmarks above: *if* you turn on the
+opt-in LLM metadata extractor (`METADATA_EXTRACTOR=default`), which model should
+it use? Extraction is the high-volume per-chunk call (3-8 keywords + a
+one-sentence summary as JSON), so you want the smallest model that's still fast
+*and* faithful. This harness compares any models you can serve, head-to-head,
+over engram's **real** extraction prompt + parser, with the no-LLM `yake` path as
+the baseline row.
+
+It reports, per model: throughput (chunks/s at a concurrency), p50/p95 latency,
+**mean completion tokens** (a bloated count instantly outs a Qwen3 *thinking*
+model run in the wrong mode), strict-JSON rate, schema adherence (3-8 keywords +
+one sentence), and judge-free **faithfulness proxies** (cosine of the summary and
+of the keywords to the chunk, via a local embedder).
+
+```bash
+cat > models.json <<'JSON'
+[ {"label":"qwen3-1.7b","api_base":"http://localhost:8001/v1","model":"Qwen/Qwen3-1.7B-Instruct-2507","max_tokens":96,"json_mode":true},
+  {"label":"qwen3-0.6b","api_base":"http://localhost:8002/v1","model":"Qwen/Qwen3-0.6B","max_tokens":96,"json_mode":true} ]
+JSON
+python -m bench.extractor_bench --models models.json --corpus docs/ --concurrency 8 --max-chunks 100 --out extractor.json
+```
+
+`--use-settings` also tests whatever `EXTRACTION_LLM_*`/`LLM_*` point at;
+`--no-quality` skips the embedder (perf + reliability only); omit `--corpus` for
+the built-in sample chunks. The proxies are a fast iteration loop — the **gold**
+quality check is still downstream retrieval nDCG: run the BEIR/multi-hop
+benchmarks above with the chosen extractor on a multi-chunk corpus.
+
+## Evaluating a LIVE model stack ([live_eval.py](live_eval.py))
+
+`compare.py`/`run_benchmark.py` wire *local* sentence-transformers models into the
+seams. `live_eval.py` instead drives engram's **real HTTP pipeline** against a live
+OpenAI-compatible stack (LM Studio / vLLM / TEI / ...) over an in-process `engramdb`
+store — so you can pick models on *your* hardware with real BEIR nDCG, including
+instruction-tuned embedders served correctly. It reuses `compare.py`'s
+`paired_delta` (bootstrap CI + sign test), writes per-query scores (`BENCH_OUT`),
+and compares against a previous run (`BENCH_COMPARE_TO`).
+
+```bash
+# A/B two embedders with a paired significance test (reranker off isolates the embedder):
+common="STORE_BACKEND=engramdb SCHEMA_GUARD_MODE=off EMBEDDING_API_BASE=http://host:1234/v1 \
+  EMBEDDING_DIM=1024 RERANKER_ENABLED=false HYDE_ENABLED=false SPARSE_ENABLED=false \
+  METADATA_EXTRACTOR=none SUMMARY_CHANNEL_ENABLED=false KEYWORDS_CHANNEL_ENABLED=false \
+  BENCH_DATA_DIR=./beir BENCH_DATASET=scifact"
+env $common EMBEDDING_MODEL=BAAI/bge-m3 BENCH_OUT=bge.json python -m bench.live_eval
+env $common EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B \
+  QUERY_INSTRUCTION=$'Instruct: Given a search query, retrieve relevant passages\nQuery: ' \
+  BENCH_OUT=qwen.json BENCH_COMPARE_TO=bge.json python -m bench.live_eval
+```
+
+**Measuring the reranker leg (the actual quality lever).** A server like LM Studio
+can't serve a reranker, so load one in-process with `BENCH_LOCAL_RERANKER` (needs
+`torch`+`sentence-transformers`, ideally a GPU) and run `RERANKER_ENABLED=true
+RERANKER_STRATEGY=local`. This answers the §1d question on *your* data — does a
+strong reranker wash out the embedder gap?
+
+```bash
+env $common_but_reranker_on EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B \
+  RERANKER_ENABLED=true RERANKER_STRATEGY=local \
+  BENCH_LOCAL_RERANKER=Qwen/Qwen3-Reranker-0.6B python -m bench.live_eval
+```
+
+Measured so far (see RESULTS §1d-live): qwen3-embedding-0.6b beats bge-m3 on SciFact
+content-only by a **significant** +3.4 nDCG@10 (p=0.003) — but raw-dense only; §1d
+shows the reranker likely collapses it, and bge-m3 is the cross-domain-robust default.
+
 ## What it does *not* exercise
 
 No generative LLM is available in this environment, so HyDE and **LLM** keyword

@@ -44,7 +44,7 @@ skipped, never fatal).
 | Stage | Registry | Config key | Default | File |
 |---|---|---|---|---|
 | Chunking | `CHUNKERS` | `CHUNK_STRATEGY` | `fixed` | [app/chunking.py](../app/chunking.py) |
-| Metadata extraction | `EXTRACTORS` | `METADATA_EXTRACTOR` | `default` | [app/llm.py](../app/llm.py) |
+| Metadata extraction | `EXTRACTORS` | `METADATA_EXTRACTOR` | `yake` (no-LLM; `default`=LLM, `none`) | [app/llm.py](../app/llm.py) |
 | Channel embed-source | `CHANNEL_SOURCES` | (per channel `source`) | `text`/`summary`/`keywords` | [app/channels.py](../app/channels.py) |
 | Score fusion | `FUSIONS` | `FUSION_STRATEGY` | `dbsf_convex` | [app/pipeline.py](../app/pipeline.py) |
 | Graph expansion | `EXPANDERS` | `EXPANDER_STRATEGY` | `sequence_keyword` | [app/pipeline.py](../app/pipeline.py) |
@@ -57,8 +57,11 @@ paragraph/sentence-aligned fixed window with overlap.
 
 ### Metadata extractor
 `async (client, chunk) -> ExtractionResult` exposing at least `.summary` and
-`.keywords` (those feed the summary/keywords channels). A domain extractor might
-pull named entities or code symbols instead.
+`.keywords` (those feed the summary/keywords channels). The default `yake` is
+**LLM-free** — statistical keywords + the chunk's lead sentence — so ingest
+makes no per-chunk chat call; `default` is the opt-in LLM upgrade (sharper
+abstractive gist, one call per fresh chunk). A domain extractor might pull named
+entities or code symbols instead.
 
 ### Fusion
 `(channel_hits, channels, fulltext_hits, fulltext_weight, settings) -> dict[id, candidate]`.
@@ -161,12 +164,13 @@ and metadata — so only the chunks that actually changed pay for fresh LLM
 extraction + embedding. Localized edits cost re-embedding only the chunks they
 touch; a full reflow that shifts every chunk boundary still re-embeds everything.
 
-**Cheaper ingest.** Drop the summary/keywords channels with
-`SUMMARY_CHANNEL_ENABLED=false` / `KEYWORDS_CHANNEL_ENABLED=false` (content-only
-= one embedding per chunk), and set `METADATA_EXTRACTOR=none` to skip the
-per-chunk LLM call entirely. Together that's the naive-baseline cost (1 embedding,
-0 LLM calls). The trade-off: no keyword-sibling graph expansion and no summary
-in the fulltext index, since both derive from that metadata — so it's strictly
+**Cheaper ingest.** The default `METADATA_EXTRACTOR=yake` is already LLM-free at
+ingest (0 LLM calls), while keeping the keyword graph and a lead-sentence
+summary. To go all the way to the naive baseline — *one* embedding per chunk —
+also drop the summary/keywords channels with `SUMMARY_CHANNEL_ENABLED=false` /
+`KEYWORDS_CHANNEL_ENABLED=false` (and optionally `METADATA_EXTRACTOR=none`). The
+trade-off vs the yake default: no keyword-sibling graph expansion and no summary
+in the fulltext index, since both derive from that metadata — so content-only is
 opt-in, not the default.
 
 ### Contextual Retrieval

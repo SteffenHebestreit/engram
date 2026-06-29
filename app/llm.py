@@ -20,6 +20,41 @@ entities and concepts. Lowercase unless a proper noun.
 - summary: exactly ONE sentence summarizing the chunk.
 - No markdown, no explanations, JSON only."""
 
+# The extraction output as a json_schema response_format. On servers that support
+# it (vLLM guided decoding, LM Studio, llama.cpp GBNF) this GUARANTEES schema-valid
+# JSON via constrained decoding, and — on servers that gate chain-of-thought behind
+# free-form generation — it suppresses the thinking preamble. Required by LM Studio,
+# which rejects {"type":"json_object"}. Selected via extraction_response_format.
+EXTRACTION_JSON_SCHEMA: dict = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "extraction",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "keywords": {"type": "array", "items": {"type": "string"}},
+                "summary": {"type": "string"},
+            },
+            "required": ["keywords", "summary"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def _extraction_response_format(settings) -> dict | None:
+    """The extraction call's response_format, general across serving stacks: an
+    explicit `extraction_response_format` wins, else inherit `llm_json_mode`."""
+    mode = (settings.extraction_response_format or "").lower()
+    if not mode:
+        return {"type": "json_object"} if settings.llm_json_mode else None
+    if mode in ("json_schema", "schema"):
+        return EXTRACTION_JSON_SCHEMA
+    if mode in ("json_object", "json"):
+        return {"type": "json_object"}
+    return None  # "text" / "none" — rely on the tolerant parser
+
 
 class ExtractionResult(dict):
     @property
@@ -77,17 +112,25 @@ _yake_extractor = None
 
 @EXTRACTORS.register("yake")
 async def extract_yake(client: httpx.AsyncClient, chunk: str) -> ExtractionResult:
-    """Statistical keyword extraction (YAKE) — no LLM, no network.
+    """Statistical keyword extraction (YAKE) — no LLM, no network. The default.
 
-    A middle ground between `default` (LLM) and `none`: it populates the
-    keyword channel and the shared-keyword graph (so cross-document HAS_KEYWORD
-    linking and keyword-sibling expansion work) without a generative model.
-    The summary is the chunk's first sentence. Useful for graph-augmented
-    retrieval when no LLM endpoint is available.
+    Sits between `default` (LLM) and `none`: it populates the keyword channel
+    and the shared-keyword graph (so cross-document HAS_KEYWORD linking and
+    keyword-sibling expansion work) and gives the summary channel the chunk's
+    first sentence — all without a generative model, so ingest needs no chat
+    endpoint and isn't bottlenecked on per-chunk generation. Switch to `default`
+    for an LLM-written abstractive summary (an opt-in quality upgrade).
     """
     global _yake_extractor
     if _yake_extractor is None:
-        import yake
+        try:
+            import yake
+        except ImportError as e:  # yake is the default extractor, so required
+            raise RuntimeError(
+                "The default METADATA_EXTRACTOR='yake' needs the 'yake' package "
+                "(pip install yake, or it ships in requirements.txt). Or set "
+                "METADATA_EXTRACTOR=default (LLM) / 'none' to avoid it."
+            ) from e
 
         _yake_extractor = yake.KeywordExtractor(lan="en", n=2, top=8)
     keywords = [kw.lower() for kw, _ in _yake_extractor.extract_keywords(chunk)]
@@ -98,26 +141,53 @@ async def extract_yake(client: httpx.AsyncClient, chunk: str) -> ExtractionResul
 
 @EXTRACTORS.register("default")
 async def extract_metadata(client: httpx.AsyncClient, chunk: str) -> ExtractionResult:
-    """Ask the LLM for keywords/labels and a one-sentence summary of a chunk."""
+    """Ask the LLM for keywords/labels and a one-sentence summary of a chunk.
+
+    Targets a separate small/fast extraction model when `extraction_llm_*` is
+    configured, else the shared `llm_*` endpoint. Extraction is the high-volume,
+    low-difficulty LLM call, so it pays to run a small model here (with
+    `extraction_max_tokens` capping the tiny output) while HyDE/contextual/
+    community keep the stronger model. Chunks below `extraction_min_chars` skip
+    the round trip and fall back to the statistical `yake` extractor.
+    """
     settings = get_settings()
 
+    # length-gate: short chunks (titles, headers, list items) aren't worth an LLM
+    # round trip — statistical keywords + first sentence are good enough.
+    if settings.extraction_min_chars and len(chunk.strip()) < settings.extraction_min_chars:
+        return await extract_yake(client, chunk)
+
+    # prefer the dedicated extraction endpoint/model, falling back per-field to
+    # the shared llm_* settings (all blank => identical to the shared endpoint).
+    api_base = settings.extraction_llm_api_base or settings.llm_api_base
+    api_key = settings.extraction_llm_api_key or settings.llm_api_key
+    model = settings.extraction_llm_model or settings.llm_model
+
     body: dict = {
-        "model": settings.llm_model,
+        "model": model,
         "temperature": 0.1,
         "messages": [
             {"role": "system", "content": _EXTRACTION_SYSTEM_PROMPT},
             {"role": "user", "content": chunk},
         ],
     }
-    if settings.llm_json_mode:
-        body["response_format"] = {"type": "json_object"}
+    if settings.extraction_max_tokens > 0:
+        body["max_tokens"] = settings.extraction_max_tokens
+    rf = _extraction_response_format(settings)
+    if rf:
+        body["response_format"] = rf
+    # serving-specific reasoning controls (e.g. {"chat_template_kwargs":
+    # {"enable_thinking": false}} on vLLM, {"reasoning_effort": "none"} on
+    # Ollama/LM Studio) merged at the top level; empty by default.
+    if settings.extraction_extra_body:
+        body.update(settings.extraction_extra_body)
 
     headers = {}
-    if settings.llm_api_key:
-        headers["Authorization"] = f"Bearer {settings.llm_api_key}"
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     resp = await client.post(
-        f"{settings.llm_api_base.rstrip('/')}/chat/completions",
+        f"{api_base.rstrip('/')}/chat/completions",
         json=body,
         headers=headers,
         timeout=settings.request_timeout,

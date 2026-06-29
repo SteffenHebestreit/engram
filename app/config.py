@@ -98,11 +98,51 @@ class Settings(BaseSettings):
     dedup_cosine_threshold: float = 0.95
     dedup_candidate_k: int = 5
 
-    # LLM endpoint for metadata extraction (OpenAI-compatible /chat/completions)
+    # LLM endpoint (OpenAI-compatible /chat/completions), shared by query-time
+    # HyDE, the opt-in `default` metadata extractor, Contextual Retrieval and
+    # community reports.
     llm_api_base: str = "http://localhost:8000/v1"
     llm_api_key: str = ""
     llm_model: str = "qwen2.5-14b-instruct"
     llm_json_mode: bool = True
+
+    # Optional SEPARATE endpoint/model for the per-chunk metadata extractor
+    # (METADATA_EXTRACTOR=default) only. Extraction is the high-volume,
+    # low-difficulty LLM call (3-8 keywords + a one-sentence summary as JSON), so
+    # it pays to point it at a small fast model (e.g. Qwen3-1.7B-Instruct-2507 —
+    # served NON-thinking + constrained JSON) while HyDE/contextual/community keep
+    # the stronger `llm_*` model above. Each field falls back to its `llm_*`
+    # counterpart when left blank, so leaving these unset reproduces today's
+    # behaviour exactly. `extraction_max_tokens` caps the (tiny) output to bound
+    # tail latency at the ingest fan-out — the reply is only ever a few dozen
+    # tokens, but a small model that fails to stop would otherwise generate until
+    # `request_timeout`. 0 = no cap (today's behaviour); 96 is a good value.
+    extraction_llm_api_base: str = ""
+    extraction_llm_api_key: str = ""
+    extraction_llm_model: str = ""
+    extraction_max_tokens: int = 0
+    # chunks shorter than this skip the LLM extraction call entirely and fall back
+    # to statistical keywords + first sentence (titles, headers, list items aren't
+    # worth a round trip). 0 disables the gate (every chunk hits the LLM).
+    extraction_min_chars: int = 0
+    # response_format for the extraction call. "" inherits llm_json_mode (json_object
+    # when true, none when false) — today's behavior, the OpenAI standard that
+    # vLLM/Ollama/llama.cpp/OpenAI accept. Override per your server:
+    #   "json_schema" sends the {keywords,summary} schema => GUARANTEED valid JSON
+    #     (constrained decoding) and, on servers that gate reasoning behind free-form
+    #     output, it suppresses chain-of-thought. Required by LM Studio (which rejects
+    #     json_object). The portable "make a tiny model reliable" choice.
+    #   "json_object" forces the OpenAI json_object mode regardless of llm_json_mode.
+    #   "text"/"none" sends no response_format (rely on the tolerant parser).
+    extraction_response_format: str = ""
+    # extra fields merged at the TOP LEVEL of the extraction request body (parsed as
+    # JSON from the env var) — for serving-specific reasoning controls that have no
+    # standard OpenAI field. Stays GENERAL: set whatever your stack needs, e.g.
+    #   vLLM Qwen3:        {"chat_template_kwargs": {"enable_thinking": false}}
+    #   Ollama/LM Studio:  {"reasoning_effort": "none"}
+    # (There is no nested "extra_body" wire key — these go top-level.) {} = nothing
+    # added. Only applied to the extraction call, never HyDE/contextual/community.
+    extraction_extra_body: dict = {}
 
     # reranker endpoint
     reranker_api_base: str = "http://localhost:8081"
@@ -147,9 +187,16 @@ class Settings(BaseSettings):
     # expansion or want a small safety margin.
     chunk_overlap_chars: int = 0
 
-    # which registered MetadataExtractor to use (see app/llm.py); "default"
-    # produces a one-sentence summary + keywords per chunk
-    metadata_extractor: str = "default"
+    # which registered MetadataExtractor to use (see app/llm.py). Default is
+    # "yake": statistical keyword extraction + the chunk's lead sentence as the
+    # summary — NO LLM call at ingest, so ingestion needs no chat endpoint and
+    # isn't bottlenecked on per-chunk generation, while the cross-document
+    # keyword graph (HAS_KEYWORD linking + sibling expansion) still builds.
+    # "default" is the opt-in quality upgrade: an LLM writes a sharper
+    # one-sentence summary + keywords per chunk (one /chat/completions call per
+    # fresh chunk — the ingest bottleneck it replaced). "none" = no metadata at
+    # all (pair with content-only channels for the naive-baseline cost).
+    metadata_extractor: str = "yake"
 
     # Contextual Retrieval (Anthropic): at ingest, an LLM writes a short
     # document-situating context per chunk, prepended to the chunk before

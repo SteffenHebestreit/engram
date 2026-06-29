@@ -296,6 +296,42 @@ embedder — is re-scored away by `bge-reranker-v2-m3`. So:
   retrieval tweak (they're capped) but the moats this harness keeps honest:
   judge-free per-corpus eval, the memory write-path, and the agent-tool interface.
 
+### 1d-live — corroborated on a live LM Studio stack (clean instructions + a paired significance test)
+
+The §1d dense deltas came from the local `sentence-transformers` harness, where
+instruction-tuned embedders are awkward to prefix correctly (the earlier run
+double-prefixed). Re-run through engram's **real HTTP pipeline** against a live
+LM Studio (`bench/live_eval.py`), each embedder given its *documented* query-side
+instruction (bge-m3 none; Qwen3-Embedding query-only), `engramdb` store,
+reranker/HyDE/sparse OFF, content channel only:
+
+| SciFact, raw dense (reranker off) | nDCG@10 | R@10 | R@100 |
+|---|---|---|---|
+| bge-m3 | 0.6912 | 0.7963 | 0.8179 |
+| qwen3-embedding-0.6b | **0.7249** | **0.8432** | **0.8582** |
+
+Paired (n=300): **mean ΔnDCG@10 +0.0337, 95% CI [+0.0121, +0.0582], win/tie/loss
+59/210/31, sign-test p=0.0032 — SIGNIFICANT.** So the raw-dense embedder advantage
+is real and now *formally confirmed* (and bge-m3's 0.6912 reproduces engram's
+published SciFact figure, validating the live harness). **But it is RAW DENSE:** by
+§1d the strong terminal reranker collapses this to a tie, and Qwen3-Embedding is
+domain-specific (it *trails* bge-m3 on NFCorpus). **Conclusion unchanged: bge-m3
+stays the robust default; the reranker is the lever.** Adopt Qwen3-Embedding-0.6B
+only if your corpus resembles SciFact *and* you confirm the gain survives your
+reranker (run `bench/live_eval.py` with `BENCH_LOCAL_RERANKER=BAAI/bge-reranker-v2-m3`
+on a GPU box).
+
+**Single-chunk channel check (same harness):** adding the yake summary+keyword
+channels onto the qwen3-embedding content channel *regressed* SciFact nDCG@10
+**0.725 → 0.654** (R@100 0.858 → 0.800) at 2× ingest cost — textbook DBSF
+fusion-dilution by weak channels on single-chunk abstracts (where a summary/keyword
+view is a near-duplicate of content, and `_fuse_dbsf_convex` divides by a fixed
+total channel weight). This is the corpus shape **most hostile** to those channels;
+on multi-chunk / long-doc corpora they are a documented robustness floor, so it is
+**not** a general "drop the channels" result — it argues content-only for
+abstract-style corpora, and shows the LLM extractor (which feeds the same channels)
+remains **unproven, not measured-worse**.
+
 ---
 
 ## Benchmark 1e — the reranker IS the lever (breaking the ceiling)

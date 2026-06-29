@@ -5,6 +5,74 @@ All notable changes to **engram**. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+- **Separate fast endpoint for the LLM metadata extractor + cost controls.** The
+  opt-in `default` extractor (keywords + one-sentence summary per chunk) is the
+  high-volume, low-difficulty LLM call, so it can now target its own small/fast
+  model independent of the strong model used for HyDE/contextual/community. New
+  settings (`app/config.py`): `EXTRACTION_LLM_API_BASE` / `EXTRACTION_LLM_MODEL` /
+  `EXTRACTION_LLM_API_KEY` (each falls back to its `LLM_*` counterpart when blank),
+  `EXTRACTION_MAX_TOKENS` (caps the tiny output to bound tail latency at the ingest
+  fan-out — the metadata call was previously uncapped, unlike HyDE/contextual), and
+  `EXTRACTION_MIN_CHARS` (chunks below the threshold skip the LLM and fall back to
+  the statistical `yake` path — titles/headers/list items aren't worth a round
+  trip). All defaults blank/0, so existing setups are byte-identical.
+  Recommended small model: `Qwen3-1.7B-Instruct-2507` (non-thinking by design),
+  served with constrained JSON; see `.env.example`.
+- **General serving controls for the extractor (`EXTRACTION_RESPONSE_FORMAT` +
+  `EXTRACTION_EXTRA_BODY`).** `EXTRACTION_RESPONSE_FORMAT=json_schema` sends the
+  `{keywords,summary}` schema -> guaranteed valid JSON via constrained decoding, and
+  it suppresses chain-of-thought on servers that gate reasoning behind free-form
+  output (it's also **required by LM Studio**, which rejects `json_object`).
+  `EXTRACTION_EXTRA_BODY` (JSON) merges serving-specific reasoning controls at the
+  request top level, stack-agnostically: `{"chat_template_kwargs":
+  {"enable_thinking":false}}` for vLLM Qwen3, `{"reasoning_effort":"none"}` for
+  Ollama/LM Studio. Thinking models (Qwen3, Gemma 4) otherwise waste tokens
+  reasoning on this trivial task. Defaults reproduce today's behavior.
+- **`bench/live_eval.py` — BEIR nDCG against a LIVE model stack.** Drives engram's
+  real HTTP pipeline (not local sentence-transformers) against any OpenAI-compatible
+  stack (LM Studio / vLLM / TEI) over an in-process `engramdb` store, so models can
+  be picked on real hardware with real metrics — including instruction-tuned
+  embedders served correctly. Reuses `compare.py`'s `paired_delta` (bootstrap CI +
+  sign test), writes per-query scores (`BENCH_OUT`) and runs a paired test vs a
+  prior run (`BENCH_COMPARE_TO`); an optional in-process reranker (`BENCH_LOCAL_RERANKER`)
+  measures the reranker leg on a stack whose server can't serve one. First result
+  (RESULTS §1d-live): qwen3-embedding-0.6b beats bge-m3 on SciFact content-only by a
+  significant +3.4 nDCG@10 (95% CI [+1.2,+5.8], p=0.003) — but raw-dense only;
+  consistent with §1d, bge-m3 remains the cross-domain-robust default.
+- **`bench/extractor_bench.py` — extraction-model bake-off.** Compares any models
+  you can serve, head-to-head over engram's real extraction prompt + parser, on
+  throughput / p50-p95 latency / mean completion + reasoning tokens (which expose a
+  thinking-mode misconfig) / strict-JSON rate / schema adherence / and judge-free
+  faithfulness proxies (summary- and keyword-to-chunk cosine, via a local or served
+  embedder), with the no-LLM `yake` path as the baseline row. Each model entry
+  carries its own `response_format` / `extra_body` / `prompt_suffix` / `api_key_env`,
+  so it's serving-stack-agnostic. See `bench/README.md`.
+
+### Changed
+- **Default `METADATA_EXTRACTOR` is now `yake` (was `default`) — ingest is
+  LLM-free out of the box.** The previous default made one `/chat/completions`
+  call per chunk to write a one-sentence summary + keywords, which was the
+  dominant ingest bottleneck (serial per-chunk generation, capped at
+  `EXTRACTION_CONCURRENCY`). The new default uses statistical keyword extraction
+  (YAKE) + the chunk's lead sentence as the summary: **zero LLM calls at
+  ingest**, no chat endpoint required, and the cross-document keyword graph
+  (`HAS_KEYWORD` linking + sibling expansion) still builds. The LLM extractor
+  remains available as an opt-in upgrade (`METADATA_EXTRACTOR=default`) for a
+  sharper abstractive gist — but note there is **no benchmark showing the LLM
+  summary beats yake on retrieval quality** (every harness ran the summary
+  channel inert, on single-chunk corpora), so it is positioned as opt-in, not a
+  measured win. Rationale: the summary feeds one modestly-weighted, largely
+  *redundant* dense channel (a lossy restatement of text the content channel
+  already embeds) plus a marginal BM25 contribution — it does not touch the
+  reranker, median-proximity, or MMR, which run on chunk text / `content_embedding`.
+  - *Migration:* the channel **set** is unchanged, so this does **not** trip the
+    schema guard. Fresh stores: nothing to do. An existing corpus keeps its old
+    LLM-derived summary/keyword vectors until re-ingested; to fully adopt yake,
+    re-ingest from a clean store (a plain re-ingest reuses byte-identical chunks'
+    stored vectors via `REUSE_UNCHANGED_CHUNKS`). To restore the old behavior,
+    set `METADATA_EXTRACTOR=default`.
+
 ## [0.5.0] - 2026-06-27
 
 Positioning correction + the embedded backend's headline features. Honest framing:
